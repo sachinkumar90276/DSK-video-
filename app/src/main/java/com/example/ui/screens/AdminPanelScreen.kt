@@ -60,7 +60,9 @@ fun AdminDashboardScreen(
     onSaveSports: (SportsItem, () -> Unit) -> Unit,
     onDeleteSports: (SportsItem) -> Unit,
     onSaveKids: (KidsItem, () -> Unit) -> Unit,
-    onDeleteKids: (KidsItem) -> Unit
+    onDeleteKids: (KidsItem) -> Unit,
+    onAuthorizeAdminEmail: (String) -> Unit = {},
+    onRevokeAuthorizedAdminEmail: (String) -> Unit = {}
 ) {
     if (!isAdminAuthorized) {
         AdminAccessDeniedScreen(onBack = onBack)
@@ -69,6 +71,7 @@ fun AdminDashboardScreen(
 
     var activeTab by remember { mutableStateOf(AdminSectionTab.OVERVIEW) }
     var showSchemaDialog by remember { mutableStateOf(false) }
+    var showAuthorizeAdminsDialog by remember { mutableStateOf(false) }
 
     var editingMovie by remember { mutableStateOf<MovieItem?>(null) }
     var showMovieEditor by remember { mutableStateOf(false) }
@@ -110,11 +113,17 @@ fun AdminDashboardScreen(
                 }
             }
             Row {
+                IconButton(
+                    onClick = { showAuthorizeAdminsDialog = true },
+                    modifier = Modifier.testTag("admin_manage_admins_button")
+                ) {
+                    Icon(Icons.Filled.ManageAccounts, contentDescription = "Authorize Admin Emails", tint = DskRubyGlow)
+                }
                 IconButton(onClick = onOpenApkBuilder, modifier = Modifier.testTag("admin_apk_builder_button")) {
                     Icon(Icons.Filled.Android, contentDescription = "DSK VIDEO APK Builder", tint = DskSuccess)
                 }
                 IconButton(onClick = { showSchemaDialog = true }, modifier = Modifier.testTag("admin_schema_button")) {
-                    Icon(Icons.Filled.Storage, contentDescription = "Supabase Schema", tint = DskNeonViolet)
+                    Icon(Icons.Filled.Storage, contentDescription = "Backend SQL Schema", tint = DskNeonViolet)
                 }
                 IconButton(onClick = onRefresh, modifier = Modifier.testTag("admin_refresh_button")) {
                     Icon(Icons.Filled.Refresh, contentDescription = "Refresh Admin Data")
@@ -332,6 +341,77 @@ fun AdminDashboardScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showSchemaDialog = false }) { Text("Close") }
+            }
+        )
+    }
+
+    if (showAuthorizeAdminsDialog) {
+        var newAdminEmail by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showAuthorizeAdminsDialog = false },
+            containerColor = DskSurfaceElevated,
+            title = { Text("Manage Authorized Admins") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "First Admin registers automatically with no secret key. Pre-authorize additional Admin emails here before they register.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = DskSilver
+                    )
+                    OutlinedTextField(
+                        value = newAdminEmail,
+                        onValueChange = { newAdminEmail = it },
+                        label = { Text("Admin Email Address") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("authorize_admin_email_input")
+                    )
+                    Button(
+                        onClick = {
+                            if (newAdminEmail.isNotBlank()) {
+                                onAuthorizeAdminEmail(newAdminEmail)
+                                newAdminEmail = ""
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = DskRoyalPurple),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("authorize_admin_submit_button")
+                    ) {
+                        Text("Authorize Email")
+                    }
+                    if (adminState.authorizedAdmins.isEmpty()) {
+                        Text("No pre-authorized secondary admin emails yet.", style = MaterialTheme.typography.bodySmall, color = DskMuted)
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 180.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(adminState.authorizedAdmins, key = { it.email }) { entry ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(entry.email, style = MaterialTheme.typography.bodyMedium)
+                                        Text(entry.role.uppercase(), style = MaterialTheme.typography.labelSmall, color = DskNeonViolet)
+                                    }
+                                    IconButton(onClick = { onRevokeAuthorizedAdminEmail(entry.email) }) {
+                                        Icon(Icons.Filled.Delete, contentDescription = "Revoke Admin Email", tint = DskError)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showAuthorizeAdminsDialog = false }) { Text("Done") }
             }
         )
     }

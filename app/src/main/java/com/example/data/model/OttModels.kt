@@ -34,9 +34,15 @@ data class AdminRole(
 )
 
 @JsonClass(generateAdapter = true)
+data class AdminAuthorizedEmail(
+    val email: String = "",
+    val role: String = "admin",
+    @Json(name = "created_at") val createdAt: String = ""
+)
+
+@JsonClass(generateAdapter = true)
 data class RegisterAdminRpcRequest(
-    @Json(name = "p_full_name") val fullName: String,
-    @Json(name = "p_secret_code") val secretCode: String
+    @Json(name = "p_full_name") val fullName: String
 )
 
 object AdminRegistrationFormValidator {
@@ -46,14 +52,12 @@ object AdminRegistrationFormValidator {
         fullName: String,
         email: String,
         password: String,
-        confirmPassword: String,
-        secretCode: String
+        confirmPassword: String
     ): String? {
         if (fullName.trim().length < 2) return "Full Name is required (at least 2 characters)."
         if (!EMAIL_REGEX.matches(email.trim())) return "Please enter a valid Email Address."
         if (password.length < 8) return "Password must be at least 8 characters."
         if (password != confirmPassword) return "Password and Confirm Password do not match."
-        if (secretCode.trim().length < 6) return "Authorized Admin Registration Secret Code is required."
         return null
     }
 }

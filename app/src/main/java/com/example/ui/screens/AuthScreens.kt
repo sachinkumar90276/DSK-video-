@@ -35,6 +35,8 @@ fun AuthScreen(
     authState: AuthState,
     isBusy: Boolean,
     errorMessage: String?,
+    isBackendConfigured: Boolean = SupabaseConfig.isConfigured,
+    onSaveBackendCredentials: (url: String, anonKey: String) -> Unit = { _, _ -> },
     onSignIn: (email: String, password: String, rememberSession: Boolean) -> Unit,
     onSignUp: (email: String, password: String, username: String) -> Unit,
     onSendReset: (email: String) -> Unit,
@@ -83,24 +85,11 @@ fun AuthScreen(
                 color = DskSilver
             )
 
-            if (!SupabaseConfig.isConfigured) {
-                GlassCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text(
-                            text = "Backend Key Setup Required",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = DskWarning
-                        )
-                        Text(
-                            text = "Connected Project: ${SupabaseConfig.baseUrl}\nAdd SUPABASE_ANON_KEY in the AI Studio Secrets panel to enable live authentication & streaming.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = DskSilver
-                        )
-                    }
-                }
+            if (!isBackendConfigured) {
+                BackendKeySetupCard(
+                    onSaveCredentials = onSaveBackendCredentials,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
 
             if (authState is AuthState.VerificationPending) {
@@ -309,6 +298,78 @@ fun AuthScreen(
                 style = MaterialTheme.typography.labelMedium,
                 color = DskMuted
             )
+        }
+    }
+}
+
+@Composable
+fun BackendKeySetupCard(
+    onSaveCredentials: (url: String, anonKey: String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var projectUrl by remember { mutableStateOf(SupabaseConfig.baseUrl) }
+    var anonKey by remember { mutableStateOf("") }
+    var keyVisible by remember { mutableStateOf(false) }
+
+    GlassCard(modifier = modifier.testTag("backend_key_setup_card")) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(Icons.Filled.Key, contentDescription = null, tint = DskWarning)
+                Text(
+                    text = "Backend Key Setup Required",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = DskWarning,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Text(
+                text = "Add SUPABASE_ANON_KEY in AI Studio Secrets (or GitHub Secrets) — or paste your public Anon Key below to connect right now.",
+                style = MaterialTheme.typography.bodySmall,
+                color = DskSilver
+            )
+            OutlinedTextField(
+                value = projectUrl,
+                onValueChange = { projectUrl = it },
+                label = { Text("Backend Project URL") },
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("backend_url_input")
+            )
+            OutlinedTextField(
+                value = anonKey,
+                onValueChange = { anonKey = it },
+                label = { Text("Public Anon Key (Never Service Role)") },
+                trailingIcon = {
+                    IconButton(onClick = { keyVisible = !keyVisible }) {
+                        Icon(
+                            imageVector = if (keyVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                            contentDescription = "Toggle Anon Key Visibility"
+                        )
+                    }
+                },
+                visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("backend_anon_key_input")
+            )
+            Button(
+                onClick = { onSaveCredentials(projectUrl, anonKey) },
+                colors = ButtonDefaults.buttonColors(containerColor = DskRoyalPurple),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("backend_key_save_button")
+            ) {
+                Text("Save & Connect Backend", fontWeight = FontWeight.Bold)
+            }
         }
     }
 }

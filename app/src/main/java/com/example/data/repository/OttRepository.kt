@@ -53,7 +53,31 @@ class OttRepository(
     val settingsFlow: Flow<AppSettingsState> = preferences.settingsFlow
     val recentSearchesFlow: Flow<List<String>> = preferences.recentSearchesFlow
 
+    suspend fun loadRuntimeSupabaseConfig() = withContext(Dispatchers.IO) {
+        val (savedUrl, savedKey) = preferences.getSupabaseCredentials()
+        SupabaseConfig.setRuntimeCredentials(savedUrl, savedKey)
+    }
+
+    suspend fun saveSupabaseCredentials(url: String, anonKey: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanUrl = url.trim().trimEnd('/').ifBlank { SupabaseConfig.baseUrl }
+            val cleanKey = anonKey.trim()
+            if (!cleanUrl.startsWith("https://")) {
+                throw IllegalStateException("Supabase URL must start with https://")
+            }
+            if (cleanKey.isBlank() || cleanKey == "YOUR_SUPABASE_ANON_KEY" || cleanKey == "MY_SUPABASE_ANON_KEY") {
+                throw IllegalStateException("Please enter a valid Supabase Anon / Publishable Key.")
+            }
+            if (SupabaseConfig.isLikelyServiceRoleKey(cleanKey)) {
+                throw IllegalStateException("Security violation: Never enter a Supabase Service Role Key in the app. Use the public Anon Key only.")
+            }
+            preferences.saveSupabaseCredentials(cleanUrl, cleanKey)
+            SupabaseConfig.setRuntimeCredentials(cleanUrl, cleanKey)
+        }
+    }
+
     suspend fun restoreSession(): Result<StoredSession?> = withContext(Dispatchers.IO) {
+        loadRuntimeSupabaseConfig()
         val stored = preferences.getStoredSession()
         if (!stored.rememberSession || stored.accessToken.isBlank()) {
             return@withContext Result.success(null)
@@ -105,7 +129,7 @@ class OttRepository(
 
     suspend fun signUp(email: String, password: String, username: String): Result<String> = withContext(Dispatchers.IO) {
         if (!SupabaseConfig.isConfigured) {
-            return@withContext Result.failure(IllegalStateException("SUPABASE_ANON_KEY is not configured in AI Studio Secrets."))
+            return@withContext Result.failure(IllegalStateException("SUPABASE_ANON_KEY is not configured. Configure it in the Backend Key Setup card above or in AI Studio Secrets."))
         }
         runCatching {
             val res = authApi.signUp(
@@ -139,7 +163,7 @@ class OttRepository(
         requireAdmin: Boolean = false
     ): Result<StoredSession> = withContext(Dispatchers.IO) {
         if (!SupabaseConfig.isConfigured) {
-            return@withContext Result.failure(IllegalStateException("SUPABASE_ANON_KEY is missing. Add it in the AI Studio Secrets panel."))
+            return@withContext Result.failure(IllegalStateException("SUPABASE_ANON_KEY is not configured. Configure it in the Backend Key Setup card above or in AI Studio Secrets."))
         }
         runCatching {
             val res = authApi.signInWithPassword(AuthCredentials(email.trim(), password))
@@ -182,16 +206,14 @@ class OttRepository(
     suspend fun registerAdmin(
         fullName: String,
         email: String,
-        password: String,
-        secretCode: String
+        password: String
     ): Result<AdminRegistrationOutcome> = withContext(Dispatchers.IO) {
         if (!SupabaseConfig.isConfigured) {
-            return@withContext Result.failure(IllegalStateException("SUPABASE_ANON_KEY is not configured in AI Studio Secrets."))
+            return@withContext Result.failure(IllegalStateException("SUPABASE_ANON_KEY is not configured. Configure it in the Backend Key Setup card above or in AI Studio Secrets."))
         }
         runCatching {
             val cleanName = fullName.trim()
             val cleanEmail = email.trim()
-            val cleanSecret = secretCode.trim()
 
             val signUpRes = authApi.signUp(
                 AuthSignUpRequest(
@@ -210,13 +232,13 @@ class OttRepository(
             if (token.isNullOrBlank() || uid.isBlank()) {
                 return@runCatching AdminRegistrationOutcome.VerificationPending(
                     email = cleanEmail,
-                    message = "Verification email sent to $cleanEmail. Confirm your email, then activate your Admin account on Admin Login using your Secret Code."
+                    message = "Verification email sent to $cleanEmail. Confirm your email, then return to Admin Login -> Activate to verify your Admin access."
                 )
             }
 
             currentAccessToken = token
-            val rpcRes = restApi.registerAdminWithSecret(
-                RegisterAdminRpcRequest(fullName = cleanName, secretCode = cleanSecret)
+            val rpcRes = restApi.registerAdminAccount(
+                RegisterAdminRpcRequest(fullName = cleanName)
             )
             if (!rpcRes.isSuccessful || rpcRes.body() != true) {
                 val errMsg = parseSupabaseError(rpcRes)
@@ -251,14 +273,13 @@ class OttRepository(
         }
     }
 
-    suspend fun activateAdminWithSecret(
+    suspend fun activateAdminAccount(
         fullName: String,
         email: String,
-        password: String,
-        secretCode: String
+        password: String
     ): Result<StoredSession> = withContext(Dispatchers.IO) {
         if (!SupabaseConfig.isConfigured) {
-            return@withContext Result.failure(IllegalStateException("SUPABASE_ANON_KEY is not configured in AI Studio Secrets."))
+            return@withContext Result.failure(IllegalStateException("SUPABASE_ANON_KEY is not configured. Configure it in the Backend Key Setup card above or in AI Studio Secrets."))
         }
         runCatching {
             val cleanName = fullName.trim()
@@ -272,11 +293,11 @@ class OttRepository(
             val user = body.user ?: throw IllegalStateException("Missing user info.")
 
             currentAccessToken = token
-            val rpcRes = restApi.registerAdminWithSecret(
-                RegisterAdminRpcRequest(
-                    fullName = cleanName.ifBlank { (user.userMetadata?.get("username") as? String) ?: cleanEmail.substringBefore("@") },
-                    secretCode = secretCode.trim()
-                )
+            val resolvedName = cleanName.ifBlank {
+                (user.userMetadata?.get("username") as? String) ?: cleanEmail.substringBefore("@")
+            }
+            val rpcRes = restApi.registerAdminAccount(
+                RegisterAdminRpcRequest(fullName = resolvedName)
             )
             if (!rpcRes.isSuccessful || rpcRes.body() != true) {
                 val errMsg = parseSupabaseError(rpcRes)
@@ -293,6 +314,7 @@ class OttRepository(
                 throw IllegalStateException("Server-side admin role verification failed.")
             }
 
+            ensureProfileRow(user.id, user.email ?: cleanEmail, resolvedName)
             val session = StoredSession(
                 accessToken = token,
                 refreshToken = body.refreshToken.orEmpty(),
@@ -532,7 +554,7 @@ class OttRepository(
     // Smart URL Import
     suspend fun inspectSmartUrl(url: String): SmartUrlMetadata = urlImporter.inspectUrl(url)
 
-    // Admin Analytics & Logs
+    // Admin Analytics, Logs & Authorized Admins
     suspend fun loadAdminOverview(catalog: CatalogSnapshot): Pair<AdminDashboardStats, List<AdminActivityLog>> =
         withContext(Dispatchers.IO) {
             val profilesCount = runCatching { restApi.getAllProfiles().body()?.size ?: 0 }.getOrDefault(0)
@@ -548,6 +570,32 @@ class OttRepository(
             )
             stats to logs
         }
+
+    suspend fun getAuthorizedAdminEmails(): List<AdminAuthorizedEmail> = withContext(Dispatchers.IO) {
+        runCatching {
+            val res = restApi.getAuthorizedAdminEmails()
+            if (res.isSuccessful) res.body().orEmpty() else emptyList()
+        }.getOrDefault(emptyList())
+    }
+
+    suspend fun authorizeAdminEmail(email: String, role: String = "admin"): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanEmail = email.trim().lowercase()
+            if (cleanEmail.isBlank() || !cleanEmail.contains("@")) {
+                throw IllegalStateException("Enter a valid email address.")
+            }
+            val res = restApi.authorizeAdminEmail(mapOf("email" to cleanEmail, "role" to role))
+            if (!res.isSuccessful) throw IllegalStateException(parseSupabaseError(res))
+        }
+    }
+
+    suspend fun revokeAuthorizedAdminEmail(email: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanEmail = email.trim().lowercase()
+            val res = restApi.revokeAuthorizedAdminEmail("eq.$cleanEmail")
+            if (!res.isSuccessful) throw IllegalStateException(parseSupabaseError(res))
+        }
+    }
 
     // Admin CRUD
     suspend fun saveMovie(adminId: String, adminEmail: String, movie: MovieItem): Result<MovieItem> =

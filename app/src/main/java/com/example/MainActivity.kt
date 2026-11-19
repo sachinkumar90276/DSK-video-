@@ -60,6 +60,7 @@ fun DskVideoApp(vm: MainViewModel) {
     val activeMedia by vm.activePlayerMedia.collectAsStateWithLifecycle()
     val authBusy by vm.authBusy.collectAsStateWithLifecycle()
     val authError by vm.authError.collectAsStateWithLifecycle()
+    val isBackendConfigured by vm.isBackendConfigured.collectAsStateWithLifecycle()
     val apkBuilderState by vm.apkBuilderState.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -196,6 +197,8 @@ fun DskVideoApp(vm: MainViewModel) {
                                 authState = authState,
                                 isBusy = authBusy,
                                 errorMessage = authError,
+                                isBackendConfigured = isBackendConfigured,
+                                onSaveBackendCredentials = vm::saveBackendCredentials,
                                 onSignIn = { email, pass, remember -> vm.signIn(email, pass, remember) },
                                 onSignUp = { email, pass, user -> vm.signUp(email, pass, user) },
                                 onSendReset = { email -> vm.sendPasswordReset(email) },
@@ -213,6 +216,8 @@ fun DskVideoApp(vm: MainViewModel) {
                             AdminLoginScreen(
                                 isBusy = authBusy,
                                 errorMessage = authError,
+                                isBackendConfigured = isBackendConfigured,
+                                onSaveBackendCredentials = vm::saveBackendCredentials,
                                 onAdminSignIn = { email, pass ->
                                     vm.signIn(email, pass, rememberSession = true, requireAdmin = true) {
                                         navController.navigate(DskRoute.AdminDashboard) {
@@ -221,8 +226,8 @@ fun DskVideoApp(vm: MainViewModel) {
                                     }
                                 },
                                 onSendReset = { email -> vm.sendPasswordReset(email) },
-                                onActivateWithSecret = { fullName, email, pass, secret ->
-                                    vm.activateAdminWithSecret(fullName, email, pass, secret) {
+                                onActivateAdmin = { fullName, email, pass ->
+                                    vm.activateAdminAccount(fullName, email, pass) {
                                         navController.navigate(DskRoute.AdminDashboard) {
                                             popUpTo(DskRoute.AdminLogin) { inclusive = true }
                                         }
@@ -241,13 +246,14 @@ fun DskVideoApp(vm: MainViewModel) {
                             AdminRegisterScreen(
                                 isBusy = authBusy,
                                 errorMessage = authError,
-                                onRegisterAdmin = { fullName, email, pass, confirmPass, secret, onPending ->
+                                isBackendConfigured = isBackendConfigured,
+                                onSaveBackendCredentials = vm::saveBackendCredentials,
+                                onRegisterAdmin = { fullName, email, pass, confirmPass, onPending ->
                                     vm.registerAdmin(
                                         fullName = fullName,
                                         email = email,
                                         password = pass,
                                         confirmPassword = confirmPass,
-                                        secretCode = secret,
                                         onActivated = {
                                             navController.navigate(DskRoute.AdminDashboard) {
                                                 popUpTo(DskRoute.AdminLogin) { inclusive = true }
@@ -500,7 +506,9 @@ fun DskVideoApp(vm: MainViewModel) {
                                 onSaveSports = vm::saveSportsItem,
                                 onDeleteSports = vm::deleteSportsItem,
                                 onSaveKids = vm::saveKidsItem,
-                                onDeleteKids = vm::deleteKidsItem
+                                onDeleteKids = vm::deleteKidsItem,
+                                onAuthorizeAdminEmail = { vm.authorizeAdminEmail(it) },
+                                onRevokeAuthorizedAdminEmail = { vm.revokeAuthorizedAdminEmail(it) }
                             )
                         }
 

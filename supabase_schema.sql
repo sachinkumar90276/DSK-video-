@@ -38,15 +38,11 @@ CREATE TABLE IF NOT EXISTS public.admin_roles (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 2c. admin_registration_invites (server-side hashed secret codes; zero client policies)
-CREATE TABLE IF NOT EXISTS public.admin_registration_invites (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    secret_hash TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT 'Authorized Admin Invite',
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    max_uses INT NOT NULL DEFAULT 1,
-    uses_count INT NOT NULL DEFAULT 0,
-    expires_at TIMESTAMPTZ,
+-- 2c. admin_authorized_emails (server-side allowlist managed only by existing Admins)
+CREATE TABLE IF NOT EXISTS public.admin_authorized_emails (
+    email TEXT PRIMARY KEY,
+    role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('admin', 'super_admin')),
+    authorized_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -67,29 +63,28 @@ AS $$
     );
 $$;
 
--- Server-side Admin privilege assignment via hashed secret verification
+-- Server-side Admin privilege assignment (no secret key required):
+-- 1) First Admin Bootstrap: if zero active admins exist, assigns 'super_admin' automatically.
+-- 2) Subsequent Admins: assigns 'admin' only if the authenticated email is pre-authorized in admin_authorized_emails.
 -- Never trusts client role flags and never stores passwords manually.
-CREATE OR REPLACE FUNCTION public.register_admin_with_secret(
-    p_full_name TEXT,
-    p_secret_code TEXT
+CREATE OR REPLACE FUNCTION public.register_admin_account(
+    p_full_name TEXT
 )
 RETURNS BOOLEAN
 LANGUAGE PLPGSQL
 SECURITY DEFINER
-SET search_path = public, extensions
+SET search_path = public
 AS $$
 DECLARE
     v_uid UUID := auth.uid();
     v_email TEXT;
-    v_invite_id UUID;
+    v_has_existing_admin BOOLEAN;
+    v_authorized_role TEXT;
+    v_assigned_role TEXT;
     v_clean_name TEXT := COALESCE(NULLIF(TRIM(p_full_name), ''), 'DSK Admin');
 BEGIN
     IF v_uid IS NULL THEN
         RAISE EXCEPTION 'Authentication required before assigning admin privileges.';
-    END IF;
-
-    IF p_secret_code IS NULL OR LENGTH(TRIM(p_secret_code)) < 6 THEN
-        RAISE EXCEPTION 'Invalid Admin Registration Secret Code.';
     END IF;
 
     SELECT email INTO v_email FROM auth.users WHERE id = v_uid;
@@ -97,27 +92,31 @@ BEGIN
         RAISE EXCEPTION 'Authenticated user record not found.';
     END IF;
 
-    SELECT id INTO v_invite_id
-    FROM public.admin_registration_invites
-    WHERE is_active = TRUE
-      AND uses_count < max_uses
-      AND (expires_at IS NULL OR expires_at > NOW())
-      AND crypt(TRIM(p_secret_code), secret_hash) = secret_hash
-    ORDER BY created_at DESC
-    LIMIT 1
-    FOR UPDATE;
+    -- Lock admin_roles check safely inside transaction
+    SELECT EXISTS (
+        SELECT 1 FROM public.admin_roles WHERE is_active = TRUE
+    ) INTO v_has_existing_admin;
 
-    IF v_invite_id IS NULL THEN
-        RAISE EXCEPTION 'Unauthorized: Invalid, expired, or exhausted Admin Registration Secret Code.';
+    IF NOT v_has_existing_admin THEN
+        v_assigned_role := 'super_admin';
+    ELSE
+        SELECT role INTO v_authorized_role
+        FROM public.admin_authorized_emails
+        WHERE LOWER(email) = LOWER(v_email)
+        LIMIT 1;
+
+        IF v_authorized_role IS NULL THEN
+            -- Allow existing active admin to re-sync profile/session
+            IF EXISTS (SELECT 1 FROM public.admin_roles WHERE user_id = v_uid AND is_active = TRUE) THEN
+                RETURN TRUE;
+            END IF;
+            RAISE EXCEPTION 'Unauthorized: An active Super Admin already exists. Ask an existing Admin to authorize % in Admin Studio.', v_email;
+        END IF;
+        v_assigned_role := v_authorized_role;
     END IF;
 
-    UPDATE public.admin_registration_invites
-    SET uses_count = uses_count + 1,
-        is_active = CASE WHEN (uses_count + 1) >= max_uses THEN FALSE ELSE is_active END
-    WHERE id = v_invite_id;
-
     INSERT INTO public.admin_roles (user_id, full_name, email, role, is_active)
-    VALUES (v_uid, v_clean_name, v_email, 'admin', TRUE)
+    VALUES (v_uid, v_clean_name, v_email, v_assigned_role, TRUE)
     ON CONFLICT (user_id) DO UPDATE
     SET full_name = EXCLUDED.full_name,
         email = EXCLUDED.email,
@@ -134,14 +133,14 @@ BEGIN
         updated_at = NOW();
 
     INSERT INTO public.admin_activity_logs (admin_id, admin_email, action, entity_type, entity_id, details)
-    VALUES (v_uid, v_email, 'ADMIN_REGISTER', 'admin_roles', v_uid::TEXT, 'Authorized admin registration via server-side secret verification');
+    VALUES (v_uid, v_email, 'ADMIN_REGISTER', 'admin_roles', v_uid::TEXT, 'Server-verified admin registration (' || v_assigned_role || ')');
 
     RETURN TRUE;
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.register_admin_with_secret(TEXT, TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.register_admin_with_secret(TEXT, TEXT) TO authenticated;
+REVOKE ALL ON FUNCTION public.register_admin_account(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.register_admin_account(TEXT) TO authenticated;
 
 -- 13. categories
 CREATE TABLE IF NOT EXISTS public.categories (
@@ -341,7 +340,7 @@ CREATE INDEX IF NOT EXISTS idx_watchlist_user ON public.watchlist(user_id, creat
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_roles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.admin_roles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.admin_registration_invites ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.admin_authorized_emails ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.movies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.web_series ENABLE ROW LEVEL SECURITY;
@@ -372,7 +371,9 @@ DROP POLICY IF EXISTS "Users read own admin role or admin" ON public.admin_roles
 CREATE POLICY "Users read own admin role or admin" ON public.admin_roles FOR SELECT USING (auth.uid() = user_id OR public.is_admin());
 DROP POLICY IF EXISTS "Only admins manage admin_roles" ON public.admin_roles;
 CREATE POLICY "Only admins manage admin_roles" ON public.admin_roles FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
--- Note: public.admin_registration_invites intentionally has NO client policies so only SECURITY DEFINER RPCs can verify codes.
+
+DROP POLICY IF EXISTS "Only admins manage authorized admin emails" ON public.admin_authorized_emails;
+CREATE POLICY "Only admins manage authorized admin emails" ON public.admin_authorized_emails FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
 
 DROP POLICY IF EXISTS "Authenticated read published movies" ON public.movies;
 CREATE POLICY "Authenticated read published movies" ON public.movies FOR SELECT USING (is_published = TRUE OR public.is_admin());
@@ -427,17 +428,10 @@ DROP POLICY IF EXISTS "Only admins read and write logs" ON public.admin_activity
 CREATE POLICY "Only admins read and write logs" ON public.admin_activity_logs FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
 
 -- ============================================================================
--- SERVER-SIDE FIRST ADMIN SETUP PROCESS (Run once in Supabase SQL Editor)
--- Replace <YOUR_STRONG_ONE_TIME_SECRET> with a secret you share only with
--- authorized Admins, or promote an existing Supabase Auth user directly:
---
--- Option A (Create a one-time hashed Admin Registration Secret Code):
---   INSERT INTO public.admin_registration_invites (secret_hash, description, max_uses)
---   VALUES (extensions.crypt('REPLACE_WITH_STRONG_SECRET', extensions.gen_salt('bf')), 'First Admin Bootstrap', 1);
---
--- Option B (Promote an already-created Supabase Auth user by email):
---   INSERT INTO public.admin_roles (user_id, full_name, email, role, is_active)
---   SELECT id, COALESCE(raw_user_meta_data->>'username', 'Primary Admin'), email, 'super_admin', TRUE
---   FROM auth.users WHERE email = 'owner@yourdomain.com'
---   ON CONFLICT (user_id) DO UPDATE SET role = 'super_admin', is_active = TRUE;
+-- ADMIN BOOTSTRAP & AUTHORIZATION (No Secret Key Required)
+-- 1. First Admin: Register directly on the Admin Registration screen when zero
+--    active admins exist; server assigns 'super_admin' in admin_roles.
+-- 2. Additional Admins: Pre-authorize their email in Admin Studio (or SQL):
+--    INSERT INTO public.admin_authorized_emails (email, role) VALUES ('admin2@yourdomain.com', 'admin')
+--    ON CONFLICT (email) DO NOTHING;
 -- ============================================================================

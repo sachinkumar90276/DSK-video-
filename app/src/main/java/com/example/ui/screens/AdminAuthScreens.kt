@@ -20,6 +20,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.data.model.AdminRegistrationFormValidator
+import com.example.data.supabase.SupabaseConfig
 import com.example.ui.components.GlassCard
 import com.example.ui.theme.*
 
@@ -29,9 +30,11 @@ private enum class AdminPortalTab { LOGIN, FORGOT_PASSWORD, ACTIVATE }
 fun AdminLoginScreen(
     isBusy: Boolean,
     errorMessage: String?,
+    isBackendConfigured: Boolean = SupabaseConfig.isConfigured,
+    onSaveBackendCredentials: (url: String, anonKey: String) -> Unit = { _, _ -> },
     onAdminSignIn: (email: String, password: String) -> Unit,
     onSendReset: (email: String) -> Unit,
-    onActivateWithSecret: (fullName: String, email: String, password: String, secretCode: String) -> Unit,
+    onActivateAdmin: (fullName: String, email: String, password: String) -> Unit,
     onOpenAdminRegister: () -> Unit,
     onClearError: () -> Unit,
     onBack: () -> Unit
@@ -40,9 +43,7 @@ fun AdminLoginScreen(
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var fullName by remember { mutableStateOf("") }
-    var secretCode by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
-    var secretVisible by remember { mutableStateOf(false) }
     var resetFeedback by remember { mutableStateOf<String?>(null) }
 
     Box(
@@ -73,6 +74,12 @@ fun AdminLoginScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            if (!isBackendConfigured) {
+                BackendKeySetupCard(
+                    onSaveCredentials = onSaveBackendCredentials,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
             GlassCard(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(22.dp),
@@ -137,7 +144,7 @@ fun AdminLoginScreen(
 
                     if (activeTab == AdminPortalTab.ACTIVATE) {
                         Text(
-                            "Already verified your email? Sign in with your Admin Registration Secret Code to activate server-side Admin privileges.",
+                            "Confirmed your email? Sign in below to activate your server-side Admin privileges (first Admin auto-bootstraps as Super Admin; additional Admins require pre-authorization).",
                             style = MaterialTheme.typography.bodySmall,
                             color = DskSilver
                         )
@@ -185,28 +192,6 @@ fun AdminLoginScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("admin_password_input")
-                        )
-                    }
-
-                    if (activeTab == AdminPortalTab.ACTIVATE) {
-                        OutlinedTextField(
-                            value = secretCode,
-                            onValueChange = { secretCode = it },
-                            label = { Text("Admin Registration Secret Code") },
-                            leadingIcon = { Icon(Icons.Filled.VpnKey, contentDescription = null) },
-                            trailingIcon = {
-                                IconButton(onClick = { secretVisible = !secretVisible }) {
-                                    Icon(
-                                        imageVector = if (secretVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                                        contentDescription = "Toggle Secret Code Visibility"
-                                    )
-                                }
-                            },
-                            visualTransformation = if (secretVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                            singleLine = true,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("admin_activate_secret_input")
                         )
                     }
 
@@ -265,7 +250,7 @@ fun AdminLoginScreen(
                                         resetFeedback = "If an authorized account exists for ${email.trim()}, reset instructions have been sent."
                                     }
                                 }
-                                AdminPortalTab.ACTIVATE -> onActivateWithSecret(fullName, email, password, secretCode)
+                                AdminPortalTab.ACTIVATE -> onActivateAdmin(fullName, email, password)
                             }
                         },
                         enabled = !isBusy,
@@ -282,7 +267,7 @@ fun AdminLoginScreen(
                                 text = when (activeTab) {
                                     AdminPortalTab.LOGIN -> "Sign In as Administrator"
                                     AdminPortalTab.FORGOT_PASSWORD -> "Send Admin Reset Link"
-                                    AdminPortalTab.ACTIVATE -> "Verify Secret & Activate Admin"
+                                    AdminPortalTab.ACTIVATE -> "Verify & Activate Admin"
                                 },
                                 fontWeight = FontWeight.Bold
                             )
@@ -314,12 +299,13 @@ fun AdminLoginScreen(
 fun AdminRegisterScreen(
     isBusy: Boolean,
     errorMessage: String?,
+    isBackendConfigured: Boolean = SupabaseConfig.isConfigured,
+    onSaveBackendCredentials: (url: String, anonKey: String) -> Unit = { _, _ -> },
     onRegisterAdmin: (
         fullName: String,
         email: String,
         password: String,
         confirmPassword: String,
-        secretCode: String,
         onVerificationPending: (String) -> Unit
     ) -> Unit,
     onOpenAdminLogin: () -> Unit,
@@ -330,10 +316,8 @@ fun AdminRegisterScreen(
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var confirmPassword by remember { mutableStateOf("") }
-    var secretCode by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
     var confirmVisible by remember { mutableStateOf(false) }
-    var secretVisible by remember { mutableStateOf(false) }
     var localValidationError by remember { mutableStateOf<String?>(null) }
     var verificationMessage by remember { mutableStateOf<String?>(null) }
     var showFirstAdminGuide by remember { mutableStateOf(false) }
@@ -366,6 +350,12 @@ fun AdminRegisterScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            if (!isBackendConfigured) {
+                BackendKeySetupCard(
+                    onSaveCredentials = onSaveBackendCredentials,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
             if (verificationMessage != null) {
                 GlassCard(modifier = Modifier.fillMaxWidth()) {
                     Column(
@@ -411,7 +401,7 @@ fun AdminRegisterScreen(
                             Column {
                                 Text("Admin Registration", style = MaterialTheme.typography.headlineMedium)
                                 Text(
-                                    "Authorized personnel with server-issued Secret Code only",
+                                    "First Admin bootstraps automatically; additional Admins by authorization",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = DskMuted
                                 )
@@ -429,7 +419,7 @@ fun AdminRegisterScreen(
                             ) {
                                 Icon(Icons.Filled.VerifiedUser, contentDescription = null, tint = DskNeonViolet, modifier = Modifier.size(18.dp))
                                 Text(
-                                    "Privileges are assigned strictly server-side in admin_roles after bcrypt secret verification.",
+                                    "No secret key required. Privileges are assigned strictly server-side in admin_roles (first active Admin becomes super_admin).",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = DskSilver
                                 )
@@ -501,26 +491,6 @@ fun AdminRegisterScreen(
                                 .testTag("admin_reg_confirm_password_input")
                         )
 
-                        OutlinedTextField(
-                            value = secretCode,
-                            onValueChange = { secretCode = it; localValidationError = null; onClearError() },
-                            label = { Text("Admin Registration Secret Code") },
-                            leadingIcon = { Icon(Icons.Filled.VpnKey, contentDescription = null) },
-                            trailingIcon = {
-                                IconButton(onClick = { secretVisible = !secretVisible }) {
-                                    Icon(
-                                        imageVector = if (secretVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                                        contentDescription = "Toggle Secret Code Visibility"
-                                    )
-                                }
-                            },
-                            visualTransformation = if (secretVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                            singleLine = true,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("admin_reg_secret_code_input")
-                        )
-
                         val displayedError = localValidationError ?: errorMessage
                         if (!displayedError.isNullOrBlank()) {
                             Surface(
@@ -542,8 +512,7 @@ fun AdminRegisterScreen(
                                     fullName = fullName,
                                     email = email,
                                     password = password,
-                                    confirmPassword = confirmPassword,
-                                    secretCode = secretCode
+                                    confirmPassword = confirmPassword
                                 )
                                 if (validationErr != null) {
                                     localValidationError = validationErr
@@ -552,8 +521,7 @@ fun AdminRegisterScreen(
                                         fullName,
                                         email,
                                         password,
-                                        confirmPassword,
-                                        secretCode
+                                        confirmPassword
                                     ) { pendingMsg ->
                                         verificationMessage = pendingMsg
                                     }
@@ -605,9 +573,9 @@ fun AdminRegisterScreen(
                     }
                     AnimatedVisibility(visible = showFirstAdminGuide) {
                         Text(
-                            "1. Run supabase_schema.sql in Supabase SQL Editor.\n" +
-                                "2. Insert a bcrypt-hashed invite secret into public.admin_registration_invites (or insert the first super_admin row into public.admin_roles server-side).\n" +
-                                "3. Passwords are handled exclusively by Supabase Auth and Service Role Keys are never bundled in the app.",
+                            "1. Run supabase_schema.sql in your SQL Editor (creates admin_roles, admin_authorized_emails, and register_admin_account).\n" +
+                                "2. First Admin Setup: Register directly above with no secret key required — the server automatically promotes the first Admin to super_admin.\n" +
+                                "3. Additional Admins: Authorize their email inside Admin Studio -> Authorize Admin before they register.",
                             style = MaterialTheme.typography.bodySmall,
                             color = DskMuted
                         )

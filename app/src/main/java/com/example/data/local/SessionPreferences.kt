@@ -48,6 +48,8 @@ class SessionPreferences(private val context: Context) {
         val PARENTAL_PIN_HASH = stringPreferencesKey("parental_pin_hash")
         val PROFILE_PIN_HASH = stringPreferencesKey("profile_pin_hash")
         val RECENT_SEARCHES_JSON = stringPreferencesKey("recent_searches_json")
+        val SUPABASE_URL = stringPreferencesKey("runtime_supabase_url")
+        val SUPABASE_ANON_KEY = stringPreferencesKey("runtime_supabase_anon_key")
     }
 
     val sessionFlow: Flow<StoredSession> = context.dskDataStore.data.map { prefs ->
@@ -178,6 +180,18 @@ class SessionPreferences(private val context: Context) {
         context.dskDataStore.edit { prefs ->
             prefs.remove(Keys.RECENT_SEARCHES_JSON)
         }
+    }
+
+    suspend fun saveSupabaseCredentials(url: String, anonKey: String) {
+        context.dskDataStore.edit { prefs ->
+            prefs[Keys.SUPABASE_URL] = url.trim().trimEnd('/')
+            prefs[Keys.SUPABASE_ANON_KEY] = anonKey.trim()
+        }
+    }
+
+    suspend fun getSupabaseCredentials(): Pair<String, String> {
+        val prefs = context.dskDataStore.data.first()
+        return prefs[Keys.SUPABASE_URL].orEmpty() to prefs[Keys.SUPABASE_ANON_KEY].orEmpty()
     }
 
     fun saveOfflineSnapshot(key: String, json: String) {

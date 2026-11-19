@@ -4,6 +4,7 @@ import com.example.BuildConfig
 import com.example.data.model.*
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody
@@ -16,19 +17,50 @@ import retrofit2.http.*
 import java.util.concurrent.TimeUnit
 
 object SupabaseConfig {
+    @Volatile
+    var runtimeBaseUrl: String = ""
+
+    @Volatile
+    var runtimeAnonKey: String = ""
+
     val baseUrl: String
-        get() = BuildConfig.SUPABASE_URL
+        get() = runtimeBaseUrl
             .takeIf { it.isNotBlank() && it.startsWith("https://") }
             ?.trimEnd('/')
+            ?: BuildConfig.SUPABASE_URL
+                .takeIf { it.isNotBlank() && it.startsWith("https://") }
+                ?.trimEnd('/')
             ?: "https://ottlzprymsdfgbgsrmxn.supabase.co"
 
     val anonKey: String
-        get() = BuildConfig.SUPABASE_ANON_KEY.trim()
+        get() = runtimeAnonKey.trim().ifBlank { BuildConfig.SUPABASE_ANON_KEY.trim() }
 
     val isConfigured: Boolean
         get() = anonKey.isNotBlank() &&
             anonKey != "YOUR_SUPABASE_ANON_KEY" &&
             anonKey != "MY_SUPABASE_ANON_KEY"
+
+    fun setRuntimeCredentials(url: String?, key: String?) {
+        if (!url.isNullOrBlank() && url.trim().startsWith("https://")) {
+            runtimeBaseUrl = url.trim().trimEnd('/')
+        }
+        if (!key.isNullOrBlank()) {
+            runtimeAnonKey = key.trim()
+        }
+    }
+
+    fun isLikelyServiceRoleKey(key: String): Boolean {
+        val trimmed = key.trim()
+        if (trimmed.startsWith("sb_secret_", ignoreCase = true)) return true
+        val parts = trimmed.split(".")
+        if (parts.size == 3) {
+            val payload = runCatching {
+                String(android.util.Base64.decode(parts[1], android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP))
+            }.getOrNull().orEmpty()
+            if (payload.contains("service_role", ignoreCase = true)) return true
+        }
+        return false
+    }
 }
 
 interface SupabaseAuthApi {
@@ -87,8 +119,25 @@ interface SupabaseRestApi {
         @Query("select") select: String = "*"
     ): Response<List<AdminRole>>
 
-    @POST("rest/v1/rpc/register_admin_with_secret")
-    suspend fun registerAdminWithSecret(
+    @GET("rest/v1/admin_authorized_emails")
+    suspend fun getAuthorizedAdminEmails(
+        @Query("select") select: String = "*",
+        @Query("order") order: String = "created_at.desc"
+    ): Response<List<AdminAuthorizedEmail>>
+
+    @Headers("Prefer: resolution=merge-duplicates,return=representation")
+    @POST("rest/v1/admin_authorized_emails")
+    suspend fun authorizeAdminEmail(
+        @Body body: Map<String, @JvmSuppressWildcards Any>
+    ): Response<List<AdminAuthorizedEmail>>
+
+    @DELETE("rest/v1/admin_authorized_emails")
+    suspend fun revokeAuthorizedAdminEmail(
+        @Query("email") emailEq: String
+    ): Response<ResponseBody>
+
+    @POST("rest/v1/rpc/register_admin_account")
+    suspend fun registerAdminAccount(
         @Body request: RegisterAdminRpcRequest
     ): Response<Boolean>
 
@@ -309,8 +358,19 @@ class SupabaseClientProvider(
         val original = chain.request()
         val key = SupabaseConfig.anonKey
         val jwt = tokenProvider()?.takeIf { it.isNotBlank() } ?: key
+        val configuredUrl = SupabaseConfig.baseUrl.toHttpUrlOrNull()
+        val targetUrl = if (configuredUrl != null && original.url.host != configuredUrl.host) {
+            original.url.newBuilder()
+                .scheme(configuredUrl.scheme)
+                .host(configuredUrl.host)
+                .port(configuredUrl.port)
+                .build()
+        } else {
+            original.url
+        }
 
         val builder = original.newBuilder()
+            .url(targetUrl)
             .header("apikey", key)
             .header("Content-Type", original.header("Content-Type") ?: "application/json")
         if (jwt.isNotBlank()) {

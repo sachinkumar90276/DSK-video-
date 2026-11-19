@@ -47,6 +47,7 @@ data class AdminState(
     val isLoading: Boolean = false,
     val stats: AdminDashboardStats = AdminDashboardStats(),
     val logs: List<AdminActivityLog> = emptyList(),
+    val authorizedAdmins: List<AdminAuthorizedEmail> = emptyList(),
     val smartUrlMetadata: SmartUrlMetadata? = null,
     val isInspectingUrl: Boolean = false
 )
@@ -79,6 +80,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _authError = MutableStateFlow<String?>(null)
     val authError: StateFlow<String?> = _authError.asStateFlow()
+
+    private val _isBackendConfigured = MutableStateFlow(SupabaseConfig.isConfigured)
+    val isBackendConfigured: StateFlow<Boolean> = _isBackendConfigured.asStateFlow()
 
     private val _uiMessage = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val uiMessage: SharedFlow<String> = _uiMessage.asSharedFlow()
@@ -147,8 +151,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun bootstrap() {
         viewModelScope.launch {
+            repository.loadRuntimeSupabaseConfig()
+            _isBackendConfigured.value = SupabaseConfig.isConfigured
             delay(1500) // Show DSK VIDEO splash brand animation briefly
             val session = repository.restoreSession().getOrNull()
+            _isBackendConfigured.value = SupabaseConfig.isConfigured
             if (session != null && session.accessToken.isNotBlank()) {
                 val profile = repository.fetchProfile(session.userId)
                 _authState.value = AuthState.SignedIn(session, profile)
@@ -156,6 +163,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 _authState.value = AuthState.SignedOut
             }
+        }
+    }
+
+    fun saveBackendCredentials(url: String, anonKey: String) {
+        viewModelScope.launch {
+            repository.saveSupabaseCredentials(url, anonKey)
+                .onSuccess {
+                    _isBackendConfigured.value = SupabaseConfig.isConfigured
+                    _authError.value = null
+                    _uiMessage.tryEmit("Backend connected to ${SupabaseConfig.baseUrl}")
+                }
+                .onFailure { err ->
+                    _authError.value = err.message ?: "Failed to save backend key."
+                }
         }
     }
 
@@ -215,7 +236,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         email: String,
         password: String,
         confirmPassword: String,
-        secretCode: String,
         onActivated: () -> Unit,
         onVerificationPending: (String) -> Unit
     ) {
@@ -223,8 +243,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             fullName = fullName,
             email = email,
             password = password,
-            confirmPassword = confirmPassword,
-            secretCode = secretCode
+            confirmPassword = confirmPassword
         )
         if (validationError != null) {
             _authError.value = validationError
@@ -233,7 +252,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _authBusy.value = true
             _authError.value = null
-            val res = repository.registerAdmin(fullName, email, password, secretCode)
+            val res = repository.registerAdmin(fullName, email, password)
             _authBusy.value = false
             res.onSuccess { outcome ->
                 when (outcome) {
@@ -255,21 +274,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun activateAdminWithSecret(
+    fun activateAdminAccount(
         fullName: String,
         email: String,
         password: String,
-        secretCode: String,
         onSuccess: () -> Unit
     ) {
-        if (email.isBlank() || password.isBlank() || secretCode.trim().length < 6) {
-            _authError.value = "Enter email, password, and valid Admin Registration Secret Code."
+        if (email.isBlank() || password.isBlank()) {
+            _authError.value = "Enter your verified Admin email and password."
             return
         }
         viewModelScope.launch {
             _authBusy.value = true
             _authError.value = null
-            val res = repository.activateAdminWithSecret(fullName, email, password, secretCode)
+            val res = repository.activateAdminAccount(fullName, email, password)
             _authBusy.value = false
             res.onSuccess { session ->
                 val profile = repository.fetchProfile(session.userId)
@@ -630,7 +648,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _adminState.update { it.copy(isLoading = true) }
             val (stats, logs) = repository.loadAdminOverview(snapshot)
-            _adminState.update { it.copy(isLoading = false, stats = stats, logs = logs) }
+            val authorized = repository.getAuthorizedAdminEmails()
+            _adminState.update {
+                it.copy(
+                    isLoading = false,
+                    stats = stats,
+                    logs = logs,
+                    authorizedAdmins = authorized
+                )
+            }
+        }
+    }
+
+    fun authorizeAdminEmail(email: String, role: String = "admin") {
+        viewModelScope.launch {
+            repository.authorizeAdminEmail(email, role)
+                .onSuccess {
+                    _uiMessage.tryEmit("Authorized ${email.trim()} for Admin access")
+                    loadAdminOverview()
+                }
+                .onFailure { _uiMessage.tryEmit(it.message ?: "Failed to authorize admin email") }
+        }
+    }
+
+    fun revokeAuthorizedAdminEmail(email: String) {
+        viewModelScope.launch {
+            repository.revokeAuthorizedAdminEmail(email)
+                .onSuccess {
+                    _uiMessage.tryEmit("Revoked authorization for ${email.trim()}")
+                    loadAdminOverview()
+                }
+                .onFailure { _uiMessage.tryEmit(it.message ?: "Failed to revoke admin authorization") }
         }
     }
 

@@ -35,14 +35,10 @@ CREATE TABLE IF NOT EXISTS public.admin_roles (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS public.admin_registration_invites (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    secret_hash TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT 'Authorized Admin Invite',
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    max_uses INT NOT NULL DEFAULT 1,
-    uses_count INT NOT NULL DEFAULT 0,
-    expires_at TIMESTAMPTZ,
+CREATE TABLE IF NOT EXISTS public.admin_authorized_emails (
+    email TEXT PRIMARY KEY,
+    role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('admin', 'super_admin')),
+    authorized_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -52,49 +48,48 @@ RETURNS BOOLEAN LANGUAGE SQL SECURITY DEFINER SET search_path = public STABLE AS
         OR EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = auth.uid() AND role = 'admin');
 $$;
 
-CREATE OR REPLACE FUNCTION public.register_admin_with_secret(p_full_name TEXT, p_secret_code TEXT)
-RETURNS BOOLEAN LANGUAGE PLPGSQL SECURITY DEFINER SET search_path = public, extensions AS $$
+CREATE OR REPLACE FUNCTION public.register_admin_account(p_full_name TEXT)
+RETURNS BOOLEAN LANGUAGE PLPGSQL SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     v_uid UUID := auth.uid();
     v_email TEXT;
-    v_invite_id UUID;
+    v_has_existing_admin BOOLEAN;
+    v_authorized_role TEXT;
+    v_assigned_role TEXT;
     v_clean_name TEXT := COALESCE(NULLIF(TRIM(p_full_name), ''), 'DSK Admin');
 BEGIN
     IF v_uid IS NULL THEN RAISE EXCEPTION 'Authentication required.'; END IF;
-    IF p_secret_code IS NULL OR LENGTH(TRIM(p_secret_code)) < 6 THEN
-        RAISE EXCEPTION 'Invalid Admin Registration Secret Code.';
-    END IF;
     SELECT email INTO v_email FROM auth.users WHERE id = v_uid;
     IF v_email IS NULL THEN RAISE EXCEPTION 'User record not found.'; END IF;
 
-    SELECT id INTO v_invite_id FROM public.admin_registration_invites
-    WHERE is_active = TRUE AND uses_count < max_uses
-      AND (expires_at IS NULL OR expires_at > NOW())
-      AND crypt(TRIM(p_secret_code), secret_hash) = secret_hash
-    ORDER BY created_at DESC LIMIT 1 FOR UPDATE;
-    IF v_invite_id IS NULL THEN
-        RAISE EXCEPTION 'Unauthorized: Invalid, expired, or exhausted Admin Registration Secret Code.';
+    SELECT EXISTS (SELECT 1 FROM public.admin_roles WHERE is_active = TRUE) INTO v_has_existing_admin;
+    IF NOT v_has_existing_admin THEN
+        v_assigned_role := 'super_admin';
+    ELSE
+        SELECT role INTO v_authorized_role FROM public.admin_authorized_emails WHERE LOWER(email) = LOWER(v_email) LIMIT 1;
+        IF v_authorized_role IS NULL THEN
+            IF EXISTS (SELECT 1 FROM public.admin_roles WHERE user_id = v_uid AND is_active = TRUE) THEN
+                RETURN TRUE;
+            END IF;
+            RAISE EXCEPTION 'Unauthorized: An active Super Admin already exists. Ask an existing Admin to authorize % in Admin Studio.', v_email;
+        END IF;
+        v_assigned_role := v_authorized_role;
     END IF;
 
-    UPDATE public.admin_registration_invites
-    SET uses_count = uses_count + 1,
-        is_active = CASE WHEN (uses_count + 1) >= max_uses THEN FALSE ELSE is_active END
-    WHERE id = v_invite_id;
-
     INSERT INTO public.admin_roles (user_id, full_name, email, role, is_active)
-    VALUES (v_uid, v_clean_name, v_email, 'admin', TRUE)
+    VALUES (v_uid, v_clean_name, v_email, v_assigned_role, TRUE)
     ON CONFLICT (user_id) DO UPDATE SET full_name = EXCLUDED.full_name, email = EXCLUDED.email, is_active = TRUE;
 
     INSERT INTO public.user_roles (user_id, role) VALUES (v_uid, 'admin') ON CONFLICT (user_id, role) DO NOTHING;
 
     INSERT INTO public.admin_activity_logs (admin_id, admin_email, action, entity_type, entity_id, details)
-    VALUES (v_uid, v_email, 'ADMIN_REGISTER', 'admin_roles', v_uid::TEXT, 'Authorized admin registration via server-side secret');
+    VALUES (v_uid, v_email, 'ADMIN_REGISTER', 'admin_roles', v_uid::TEXT, 'Server-verified admin registration (' || v_assigned_role || ')');
     RETURN TRUE;
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.register_admin_with_secret(TEXT, TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.register_admin_with_secret(TEXT, TEXT) TO authenticated;
+REVOKE ALL ON FUNCTION public.register_admin_account(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.register_admin_account(TEXT) TO authenticated;
 
 CREATE TABLE IF NOT EXISTS public.categories (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

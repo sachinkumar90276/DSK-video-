@@ -26,6 +26,7 @@ import com.example.ui.theme.DskVideoTheme
 import com.example.ui.viewmodel.AdminState
 import com.example.ui.viewmodel.AuthState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -137,13 +138,14 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `auth screen displays sign in and separate admin portal option`() {
+    fun `auth screen displays backend setup box when key missing and sign in controls`() {
         composeRule.setContent {
             DskVideoTheme {
                 AuthScreen(
                     authState = AuthState.SignedOut,
                     isBusy = false,
                     errorMessage = null,
+                    isBackendConfigured = false,
                     onSignIn = { _, _, _ -> },
                     onSignUp = { _, _, _ -> },
                     onSendReset = {},
@@ -155,7 +157,9 @@ class ExampleRobolectricTest {
             }
         }
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("Sign In to Watch").assertIsDisplayed()
+        composeRule.onNodeWithTag("backend_anon_key_input").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("backend_key_save_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("Sign In to Watch").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("open_admin_login_button").performScrollTo().assertIsDisplayed()
     }
 
@@ -178,23 +182,29 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `admin registration form validator enforces secret code and matching passwords`() {
-        assertNotNull(AdminRegistrationFormValidator.validate("", "admin@dsk.com", "StrongPass1", "StrongPass1", "SECRET123"))
-        assertNotNull(AdminRegistrationFormValidator.validate("Admin User", "invalid-email", "StrongPass1", "StrongPass1", "SECRET123"))
-        assertNotNull(AdminRegistrationFormValidator.validate("Admin User", "admin@dsk.com", "short", "short", "SECRET123"))
-        assertNotNull(AdminRegistrationFormValidator.validate("Admin User", "admin@dsk.com", "StrongPass1", "Mismatch1", "SECRET123"))
-        assertNotNull(AdminRegistrationFormValidator.validate("Admin User", "admin@dsk.com", "StrongPass1", "StrongPass1", ""))
-        assertNull(AdminRegistrationFormValidator.validate("Admin User", "admin@dsk.com", "StrongPass1", "StrongPass1", "DSK-SECRET-2026"))
+    fun `admin registration form validator validates fields without requiring secret code`() {
+        assertNotNull(AdminRegistrationFormValidator.validate("", "admin@dsk.com", "StrongPass1", "StrongPass1"))
+        assertNotNull(AdminRegistrationFormValidator.validate("Admin User", "invalid-email", "StrongPass1", "StrongPass1"))
+        assertNotNull(AdminRegistrationFormValidator.validate("Admin User", "admin@dsk.com", "short", "short"))
+        assertNotNull(AdminRegistrationFormValidator.validate("Admin User", "admin@dsk.com", "StrongPass1", "Mismatch1"))
+        assertNull(AdminRegistrationFormValidator.validate("Admin User", "admin@dsk.com", "StrongPass1", "StrongPass1"))
     }
 
     @Test
-    fun `admin register screen renders all five required registration fields`() {
+    fun `backend key guard rejects service role keys`() {
+        assertTrue(SupabaseConfig.isLikelyServiceRoleKey("sb_secret_abcdef"))
+        assertFalse(SupabaseConfig.isLikelyServiceRoleKey("sb_publishable_abcdef"))
+    }
+
+    @Test
+    fun `admin register screen renders four fields with no secret code required`() {
         composeRule.setContent {
             DskVideoTheme {
                 AdminRegisterScreen(
                     isBusy = false,
                     errorMessage = null,
-                    onRegisterAdmin = { _, _, _, _, _, _ -> },
+                    isBackendConfigured = true,
+                    onRegisterAdmin = { _, _, _, _, _ -> },
                     onOpenAdminLogin = {},
                     onClearError = {},
                     onBack = {}
@@ -206,7 +216,7 @@ class ExampleRobolectricTest {
         composeRule.onNodeWithTag("admin_reg_email_input").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("admin_reg_password_input").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("admin_reg_confirm_password_input").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithTag("admin_reg_secret_code_input").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("admin_reg_secret_code_input").assertDoesNotExist()
         composeRule.onNodeWithTag("admin_register_submit").performScrollTo().assertIsDisplayed()
     }
 
@@ -217,9 +227,10 @@ class ExampleRobolectricTest {
                 AdminLoginScreen(
                     isBusy = false,
                     errorMessage = null,
+                    isBackendConfigured = true,
                     onAdminSignIn = { _, _ -> },
                     onSendReset = {},
-                    onActivateWithSecret = { _, _, _, _ -> },
+                    onActivateAdmin = { _, _, _ -> },
                     onOpenAdminRegister = {},
                     onClearError = {},
                     onBack = {}
