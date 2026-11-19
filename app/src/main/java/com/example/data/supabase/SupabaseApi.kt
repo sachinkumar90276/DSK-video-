@@ -74,12 +74,23 @@ interface SupabaseRestApi {
     @POST("rest/v1/profiles")
     suspend fun upsertProfile(@Body profile: Map<String, @JvmSuppressWildcards Any>): Response<List<UserProfile>>
 
-    // 2. User Roles
+    // 2. User Roles & Admin Roles
     @GET("rest/v1/user_roles")
     suspend fun getUserRoles(
         @Query("user_id") userIdEq: String,
         @Query("select") select: String = "*"
     ): Response<List<UserRole>>
+
+    @GET("rest/v1/admin_roles")
+    suspend fun getAdminRoles(
+        @Query("user_id") userIdEq: String,
+        @Query("select") select: String = "*"
+    ): Response<List<AdminRole>>
+
+    @POST("rest/v1/rpc/register_admin_with_secret")
+    suspend fun registerAdminWithSecret(
+        @Body request: RegisterAdminRpcRequest
+    ): Response<Boolean>
 
     // 3. Movies
     @GET("rest/v1/movies")

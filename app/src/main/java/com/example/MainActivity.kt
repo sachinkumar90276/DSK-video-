@@ -98,10 +98,11 @@ fun DskVideoApp(vm: MainViewModel) {
         val currentIsSplash = currentDest?.hasRoute<DskRoute.Splash>() == true
         val currentIsAuth = currentDest?.hasRoute<DskRoute.Auth>() == true
         val currentIsAdminLogin = currentDest?.hasRoute<DskRoute.AdminLogin>() == true
+        val currentIsAdminRegister = currentDest?.hasRoute<DskRoute.AdminRegister>() == true
         when (authState) {
             AuthState.Checking -> Unit
             is AuthState.SignedOut, is AuthState.VerificationPending -> {
-                if (!currentIsAuth && !currentIsAdminLogin) {
+                if (!currentIsAuth && !currentIsAdminLogin && !currentIsAdminRegister) {
                     navController.navigate(DskRoute.Auth) {
                         popUpTo(0) { inclusive = true }
                     }
@@ -219,6 +220,49 @@ fun DskVideoApp(vm: MainViewModel) {
                                         }
                                     }
                                 },
+                                onSendReset = { email -> vm.sendPasswordReset(email) },
+                                onActivateWithSecret = { fullName, email, pass, secret ->
+                                    vm.activateAdminWithSecret(fullName, email, pass, secret) {
+                                        navController.navigate(DskRoute.AdminDashboard) {
+                                            popUpTo(DskRoute.AdminLogin) { inclusive = true }
+                                        }
+                                    }
+                                },
+                                onOpenAdminRegister = {
+                                    vm.clearAuthError()
+                                    navController.navigate(DskRoute.AdminRegister)
+                                },
+                                onClearError = { vm.clearAuthError() },
+                                onBack = { navController.popBackStack() }
+                            )
+                        }
+
+                        composable<DskRoute.AdminRegister> {
+                            AdminRegisterScreen(
+                                isBusy = authBusy,
+                                errorMessage = authError,
+                                onRegisterAdmin = { fullName, email, pass, confirmPass, secret, onPending ->
+                                    vm.registerAdmin(
+                                        fullName = fullName,
+                                        email = email,
+                                        password = pass,
+                                        confirmPassword = confirmPass,
+                                        secretCode = secret,
+                                        onActivated = {
+                                            navController.navigate(DskRoute.AdminDashboard) {
+                                                popUpTo(DskRoute.AdminLogin) { inclusive = true }
+                                            }
+                                        },
+                                        onVerificationPending = onPending
+                                    )
+                                },
+                                onOpenAdminLogin = {
+                                    vm.clearAuthError()
+                                    navController.navigate(DskRoute.AdminLogin) {
+                                        popUpTo(DskRoute.AdminRegister) { inclusive = true }
+                                    }
+                                },
+                                onClearError = { vm.clearAuthError() },
                                 onBack = { navController.popBackStack() }
                             )
                         }
@@ -461,12 +505,16 @@ fun DskVideoApp(vm: MainViewModel) {
                         }
 
                         composable<DskRoute.ApkBuilder> {
-                            ApkBuilderScreen(
-                                uiState = apkBuilderState,
-                                onConnectAndInspect = vm::connectAndInspectApkBuilder,
-                                onRebuildApk = vm::triggerApkRebuild,
-                                onBack = { navController.popBackStack() }
-                            )
+                            if (!vm.isAdmin()) {
+                                AdminAccessDeniedScreen(onBack = { navController.popBackStack() })
+                            } else {
+                                ApkBuilderScreen(
+                                    uiState = apkBuilderState,
+                                    onConnectAndInspect = vm::connectAndInspectApkBuilder,
+                                    onRebuildApk = vm::triggerApkRebuild,
+                                    onBack = { navController.popBackStack() }
+                                )
+                            }
                         }
 
                         composable<DskRoute.Player> { entry ->

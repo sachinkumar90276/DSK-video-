@@ -11,17 +11,23 @@ import com.example.data.github.ApkBuildDiagnosticsEngine
 import com.example.data.github.ApkBuilderUiState
 import com.example.data.github.DiagnosticSeverity
 import com.example.data.model.AdminDashboardStats
+import com.example.data.model.AdminRegistrationFormValidator
 import com.example.data.model.StreamSourceType
 import com.example.data.repository.CatalogSnapshot
 import com.example.data.supabase.SmartUrlImporter
 import com.example.data.supabase.SupabaseConfig
+import com.example.ui.screens.AdminAccessDeniedScreen
 import com.example.ui.screens.AdminDashboardScreen
+import com.example.ui.screens.AdminLoginScreen
+import com.example.ui.screens.AdminRegisterScreen
 import com.example.ui.screens.ApkBuilderScreen
 import com.example.ui.screens.AuthScreen
 import com.example.ui.theme.DskVideoTheme
 import com.example.ui.viewmodel.AdminState
 import com.example.ui.viewmodel.AuthState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -169,5 +175,71 @@ class ExampleRobolectricTest {
         composeRule.onNodeWithText("DSK VIDEO APK BUILDER").assertIsDisplayed()
         composeRule.onNodeWithText("Disconnected").assertIsDisplayed()
         composeRule.onNodeWithTag("connect_github_button").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `admin registration form validator enforces secret code and matching passwords`() {
+        assertNotNull(AdminRegistrationFormValidator.validate("", "admin@dsk.com", "StrongPass1", "StrongPass1", "SECRET123"))
+        assertNotNull(AdminRegistrationFormValidator.validate("Admin User", "invalid-email", "StrongPass1", "StrongPass1", "SECRET123"))
+        assertNotNull(AdminRegistrationFormValidator.validate("Admin User", "admin@dsk.com", "short", "short", "SECRET123"))
+        assertNotNull(AdminRegistrationFormValidator.validate("Admin User", "admin@dsk.com", "StrongPass1", "Mismatch1", "SECRET123"))
+        assertNotNull(AdminRegistrationFormValidator.validate("Admin User", "admin@dsk.com", "StrongPass1", "StrongPass1", ""))
+        assertNull(AdminRegistrationFormValidator.validate("Admin User", "admin@dsk.com", "StrongPass1", "StrongPass1", "DSK-SECRET-2026"))
+    }
+
+    @Test
+    fun `admin register screen renders all five required registration fields`() {
+        composeRule.setContent {
+            DskVideoTheme {
+                AdminRegisterScreen(
+                    isBusy = false,
+                    errorMessage = null,
+                    onRegisterAdmin = { _, _, _, _, _, _ -> },
+                    onOpenAdminLogin = {},
+                    onClearError = {},
+                    onBack = {}
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("admin_reg_full_name_input").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("admin_reg_email_input").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("admin_reg_password_input").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("admin_reg_confirm_password_input").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("admin_reg_secret_code_input").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("admin_register_submit").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `admin login screen exposes forgot password and admin registration entry`() {
+        composeRule.setContent {
+            DskVideoTheme {
+                AdminLoginScreen(
+                    isBusy = false,
+                    errorMessage = null,
+                    onAdminSignIn = { _, _ -> },
+                    onSendReset = {},
+                    onActivateWithSecret = { _, _, _, _ -> },
+                    onOpenAdminRegister = {},
+                    onClearError = {},
+                    onBack = {}
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("admin_forgot_password_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("open_admin_register_button").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `admin access denied screen blocks unauthorized route access`() {
+        composeRule.setContent {
+            DskVideoTheme {
+                AdminAccessDeniedScreen(onBack = {})
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Admin Access Required").assertIsDisplayed()
+        composeRule.onNodeWithTag("admin_access_denied_return").assertIsDisplayed()
     }
 }

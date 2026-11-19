@@ -23,6 +23,42 @@ data class UserRole(
 )
 
 @JsonClass(generateAdapter = true)
+data class AdminRole(
+    val id: String = "",
+    @Json(name = "user_id") val userId: String = "",
+    @Json(name = "full_name") val fullName: String = "",
+    val email: String = "",
+    val role: String = "admin",
+    @Json(name = "is_active") val isActive: Boolean = true,
+    @Json(name = "created_at") val createdAt: String = ""
+)
+
+@JsonClass(generateAdapter = true)
+data class RegisterAdminRpcRequest(
+    @Json(name = "p_full_name") val fullName: String,
+    @Json(name = "p_secret_code") val secretCode: String
+)
+
+object AdminRegistrationFormValidator {
+    private val EMAIL_REGEX = Regex("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
+
+    fun validate(
+        fullName: String,
+        email: String,
+        password: String,
+        confirmPassword: String,
+        secretCode: String
+    ): String? {
+        if (fullName.trim().length < 2) return "Full Name is required (at least 2 characters)."
+        if (!EMAIL_REGEX.matches(email.trim())) return "Please enter a valid Email Address."
+        if (password.length < 8) return "Password must be at least 8 characters."
+        if (password != confirmPassword) return "Password and Confirm Password do not match."
+        if (secretCode.trim().length < 6) return "Authorized Admin Registration Secret Code is required."
+        return null
+    }
+}
+
+@JsonClass(generateAdapter = true)
 data class MovieItem(
     val id: String = "",
     val title: String = "",

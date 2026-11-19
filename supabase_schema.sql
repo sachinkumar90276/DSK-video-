@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 2. user_roles
+-- 2. user_roles (legacy/general role mapping preserved)
 CREATE TABLE IF NOT EXISTS public.user_roles (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -27,18 +27,121 @@ CREATE TABLE IF NOT EXISTS public.user_roles (
     UNIQUE (user_id, role)
 );
 
--- Helper security-definer function for RLS
+-- 2b. admin_roles (dedicated secure Admin role registry)
+CREATE TABLE IF NOT EXISTS public.admin_roles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL UNIQUE REFERENCES auth.users(id) ON DELETE CASCADE,
+    full_name TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('admin', 'super_admin')),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 2c. admin_registration_invites (server-side hashed secret codes; zero client policies)
+CREATE TABLE IF NOT EXISTS public.admin_registration_invites (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    secret_hash TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT 'Authorized Admin Invite',
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    max_uses INT NOT NULL DEFAULT 1,
+    uses_count INT NOT NULL DEFAULT 0,
+    expires_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Helper security-definer function for RLS (checks both admin_roles and legacy user_roles)
 CREATE OR REPLACE FUNCTION public.is_admin()
 RETURNS BOOLEAN
 LANGUAGE SQL
 SECURITY DEFINER
+SET search_path = public
 STABLE
 AS $$
     SELECT EXISTS (
+        SELECT 1 FROM public.admin_roles
+        WHERE user_id = auth.uid() AND is_active = TRUE
+    ) OR EXISTS (
         SELECT 1 FROM public.user_roles
         WHERE user_id = auth.uid() AND role = 'admin'
     );
 $$;
+
+-- Server-side Admin privilege assignment via hashed secret verification
+-- Never trusts client role flags and never stores passwords manually.
+CREATE OR REPLACE FUNCTION public.register_admin_with_secret(
+    p_full_name TEXT,
+    p_secret_code TEXT
+)
+RETURNS BOOLEAN
+LANGUAGE PLPGSQL
+SECURITY DEFINER
+SET search_path = public, extensions
+AS $$
+DECLARE
+    v_uid UUID := auth.uid();
+    v_email TEXT;
+    v_invite_id UUID;
+    v_clean_name TEXT := COALESCE(NULLIF(TRIM(p_full_name), ''), 'DSK Admin');
+BEGIN
+    IF v_uid IS NULL THEN
+        RAISE EXCEPTION 'Authentication required before assigning admin privileges.';
+    END IF;
+
+    IF p_secret_code IS NULL OR LENGTH(TRIM(p_secret_code)) < 6 THEN
+        RAISE EXCEPTION 'Invalid Admin Registration Secret Code.';
+    END IF;
+
+    SELECT email INTO v_email FROM auth.users WHERE id = v_uid;
+    IF v_email IS NULL THEN
+        RAISE EXCEPTION 'Authenticated user record not found.';
+    END IF;
+
+    SELECT id INTO v_invite_id
+    FROM public.admin_registration_invites
+    WHERE is_active = TRUE
+      AND uses_count < max_uses
+      AND (expires_at IS NULL OR expires_at > NOW())
+      AND crypt(TRIM(p_secret_code), secret_hash) = secret_hash
+    ORDER BY created_at DESC
+    LIMIT 1
+    FOR UPDATE;
+
+    IF v_invite_id IS NULL THEN
+        RAISE EXCEPTION 'Unauthorized: Invalid, expired, or exhausted Admin Registration Secret Code.';
+    END IF;
+
+    UPDATE public.admin_registration_invites
+    SET uses_count = uses_count + 1,
+        is_active = CASE WHEN (uses_count + 1) >= max_uses THEN FALSE ELSE is_active END
+    WHERE id = v_invite_id;
+
+    INSERT INTO public.admin_roles (user_id, full_name, email, role, is_active)
+    VALUES (v_uid, v_clean_name, v_email, 'admin', TRUE)
+    ON CONFLICT (user_id) DO UPDATE
+    SET full_name = EXCLUDED.full_name,
+        email = EXCLUDED.email,
+        is_active = TRUE;
+
+    INSERT INTO public.user_roles (user_id, role)
+    VALUES (v_uid, 'admin')
+    ON CONFLICT (user_id, role) DO NOTHING;
+
+    INSERT INTO public.profiles (id, email, username)
+    VALUES (v_uid, v_email, v_clean_name)
+    ON CONFLICT (id) DO UPDATE
+    SET username = COALESCE(NULLIF(EXCLUDED.username, ''), public.profiles.username),
+        updated_at = NOW();
+
+    INSERT INTO public.admin_activity_logs (admin_id, admin_email, action, entity_type, entity_id, details)
+    VALUES (v_uid, v_email, 'ADMIN_REGISTER', 'admin_roles', v_uid::TEXT, 'Authorized admin registration via server-side secret verification');
+
+    RETURN TRUE;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.register_admin_with_secret(TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.register_admin_with_secret(TEXT, TEXT) TO authenticated;
 
 -- 13. categories
 CREATE TABLE IF NOT EXISTS public.categories (
@@ -237,6 +340,8 @@ CREATE INDEX IF NOT EXISTS idx_watchlist_user ON public.watchlist(user_id, creat
 -- Enable Row Level Security (RLS)
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_roles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.admin_roles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.admin_registration_invites ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.movies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.web_series ENABLE ROW LEVEL SECURITY;
@@ -261,7 +366,13 @@ CREATE POLICY "Users update own profile" ON public.profiles FOR UPDATE USING (au
 DROP POLICY IF EXISTS "Users read own roles or admin" ON public.user_roles;
 CREATE POLICY "Users read own roles or admin" ON public.user_roles FOR SELECT USING (auth.uid() = user_id OR public.is_admin());
 DROP POLICY IF EXISTS "Only admins manage roles" ON public.user_roles;
-CREATE POLICY "Only admins manage roles" ON public.user_roles FOR ALL USING (public.is_admin());
+CREATE POLICY "Only admins manage roles" ON public.user_roles FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+
+DROP POLICY IF EXISTS "Users read own admin role or admin" ON public.admin_roles;
+CREATE POLICY "Users read own admin role or admin" ON public.admin_roles FOR SELECT USING (auth.uid() = user_id OR public.is_admin());
+DROP POLICY IF EXISTS "Only admins manage admin_roles" ON public.admin_roles;
+CREATE POLICY "Only admins manage admin_roles" ON public.admin_roles FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+-- Note: public.admin_registration_invites intentionally has NO client policies so only SECURITY DEFINER RPCs can verify codes.
 
 DROP POLICY IF EXISTS "Authenticated read published movies" ON public.movies;
 CREATE POLICY "Authenticated read published movies" ON public.movies FOR SELECT USING (is_published = TRUE OR public.is_admin());
@@ -314,3 +425,19 @@ CREATE POLICY "Users manage own watchlist" ON public.watchlist FOR ALL USING (au
 
 DROP POLICY IF EXISTS "Only admins read and write logs" ON public.admin_activity_logs;
 CREATE POLICY "Only admins read and write logs" ON public.admin_activity_logs FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+
+-- ============================================================================
+-- SERVER-SIDE FIRST ADMIN SETUP PROCESS (Run once in Supabase SQL Editor)
+-- Replace <YOUR_STRONG_ONE_TIME_SECRET> with a secret you share only with
+-- authorized Admins, or promote an existing Supabase Auth user directly:
+--
+-- Option A (Create a one-time hashed Admin Registration Secret Code):
+--   INSERT INTO public.admin_registration_invites (secret_hash, description, max_uses)
+--   VALUES (extensions.crypt('REPLACE_WITH_STRONG_SECRET', extensions.gen_salt('bf')), 'First Admin Bootstrap', 1);
+--
+-- Option B (Promote an already-created Supabase Auth user by email):
+--   INSERT INTO public.admin_roles (user_id, full_name, email, role, is_active)
+--   SELECT id, COALESCE(raw_user_meta_data->>'username', 'Primary Admin'), email, 'super_admin', TRUE
+--   FROM auth.users WHERE email = 'owner@yourdomain.com'
+--   ON CONFLICT (user_id) DO UPDATE SET role = 'super_admin', is_active = TRUE;
+-- ============================================================================

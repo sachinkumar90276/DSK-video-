@@ -210,6 +210,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun registerAdmin(
+        fullName: String,
+        email: String,
+        password: String,
+        confirmPassword: String,
+        secretCode: String,
+        onActivated: () -> Unit,
+        onVerificationPending: (String) -> Unit
+    ) {
+        val validationError = AdminRegistrationFormValidator.validate(
+            fullName = fullName,
+            email = email,
+            password = password,
+            confirmPassword = confirmPassword,
+            secretCode = secretCode
+        )
+        if (validationError != null) {
+            _authError.value = validationError
+            return
+        }
+        viewModelScope.launch {
+            _authBusy.value = true
+            _authError.value = null
+            val res = repository.registerAdmin(fullName, email, password, secretCode)
+            _authBusy.value = false
+            res.onSuccess { outcome ->
+                when (outcome) {
+                    is com.example.data.repository.AdminRegistrationOutcome.Activated -> {
+                        val profile = repository.fetchProfile(outcome.session.userId)
+                        _authState.value = AuthState.SignedIn(outcome.session, profile)
+                        refreshCatalog()
+                        loadAdminOverview()
+                        _uiMessage.tryEmit("Admin account registered and verified.")
+                        onActivated()
+                    }
+                    is com.example.data.repository.AdminRegistrationOutcome.VerificationPending -> {
+                        onVerificationPending(outcome.message)
+                    }
+                }
+            }.onFailure { err ->
+                _authError.value = err.message ?: "Admin registration failed."
+            }
+        }
+    }
+
+    fun activateAdminWithSecret(
+        fullName: String,
+        email: String,
+        password: String,
+        secretCode: String,
+        onSuccess: () -> Unit
+    ) {
+        if (email.isBlank() || password.isBlank() || secretCode.trim().length < 6) {
+            _authError.value = "Enter email, password, and valid Admin Registration Secret Code."
+            return
+        }
+        viewModelScope.launch {
+            _authBusy.value = true
+            _authError.value = null
+            val res = repository.activateAdminWithSecret(fullName, email, password, secretCode)
+            _authBusy.value = false
+            res.onSuccess { session ->
+                val profile = repository.fetchProfile(session.userId)
+                _authState.value = AuthState.SignedIn(session, profile)
+                refreshCatalog()
+                loadAdminOverview()
+                _uiMessage.tryEmit("Admin privileges activated.")
+                onSuccess()
+            }.onFailure { err ->
+                _authError.value = err.message ?: "Admin activation failed."
+            }
+        }
+    }
+
     fun resendVerification(email: String) {
         viewModelScope.launch {
             _authBusy.value = true

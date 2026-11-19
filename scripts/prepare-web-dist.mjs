@@ -3,18 +3,27 @@ import path from 'node:path';
 
 const verifyOnly = process.argv.includes('--verify-only');
 
-const requiredFiles = ['package.json', 'capacitor.config.ts', 'app/build.gradle.kts', 'app/src/main/AndroidManifest.xml'];
-for (const file of requiredFiles) {
+const requiredRootFiles = ['package.json', 'capacitor.config.ts'];
+for (const file of requiredRootFiles) {
   if (!fs.existsSync(path.resolve(file))) {
     console.error(`ERROR: Missing required file: ${file}`);
     process.exit(1);
   }
 }
 
-const gradleContent = fs.readFileSync('app/build.gradle.kts', 'utf8');
-if (!gradleContent.includes('applicationId = "com.dskvideo.ott"')) {
-  console.error('ERROR: Invalid package ID in app/build.gradle.kts (expected com.dskvideo.ott).');
-  process.exit(1);
+const hasRootNativeAndroid = fs.existsSync(path.resolve('app/build.gradle.kts')) && fs.existsSync(path.resolve('app/src/main/AndroidManifest.xml'));
+const hasCapacitorAndroid = fs.existsSync(path.resolve('android/app/build.gradle')) || fs.existsSync(path.resolve('android/app/build.gradle.kts'));
+
+if (!hasRootNativeAndroid && !hasCapacitorAndroid) {
+  console.warn('NOTICE: Neither app/build.gradle.kts nor android/app/build.gradle found yet; Capacitor will generate android/ during CI.');
+}
+
+if (hasRootNativeAndroid) {
+  const gradleContent = fs.readFileSync('app/build.gradle.kts', 'utf8');
+  if (!gradleContent.includes('applicationId = "com.dskvideo.ott"')) {
+    console.error('ERROR: Invalid package ID in app/build.gradle.kts (expected com.dskvideo.ott).');
+    process.exit(1);
+  }
 }
 
 if (!verifyOnly) {

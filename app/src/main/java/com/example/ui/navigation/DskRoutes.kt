@@ -7,6 +7,7 @@ sealed interface DskRoute {
     @Serializable data object Splash : DskRoute
     @Serializable data object Auth : DskRoute
     @Serializable data object AdminLogin : DskRoute
+    @Serializable data object AdminRegister : DskRoute
     @Serializable data object Home : DskRoute
     @Serializable data object Movies : DskRoute
     @Serializable data object WebSeries : DskRoute

@@ -30,103 +30,6 @@ import com.example.ui.components.GlassCard
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.AdminState
 
-@Composable
-fun AdminLoginScreen(
-    isBusy: Boolean,
-    errorMessage: String?,
-    onAdminSignIn: (email: String, password: String) -> Unit,
-    onBack: () -> Unit
-) {
-    var email by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(DskPitchBlack)
-            .statusBarsPadding()
-            .navigationBarsPadding()
-    ) {
-        IconButton(
-            onClick = onBack,
-            modifier = Modifier
-                .padding(12.dp)
-                .align(Alignment.TopStart)
-                .minimumInteractiveComponentSize()
-                .testTag("admin_login_back")
-        ) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = DskWhite)
-        }
-
-        GlassCard(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(20.dp)
-                .widthIn(max = 480.dp)
-                .align(Alignment.Center)
-        ) {
-            Column(
-                modifier = Modifier.padding(22.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Icon(Icons.Filled.AdminPanelSettings, contentDescription = null, tint = DskNeonViolet, modifier = Modifier.size(32.dp))
-                    Column {
-                        Text("Admin Portal", style = MaterialTheme.typography.headlineMedium)
-                        Text("Server-verified admin role access only", style = MaterialTheme.typography.labelMedium, color = DskMuted)
-                    }
-                }
-
-                OutlinedTextField(
-                    value = email,
-                    onValueChange = { email = it },
-                    label = { Text("Admin Email") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                    singleLine = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("admin_email_input")
-                )
-
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text("Admin Password") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    singleLine = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("admin_password_input")
-                )
-
-                if (!errorMessage.isNullOrBlank()) {
-                    Text(errorMessage, color = DskError, style = MaterialTheme.typography.bodyMedium)
-                }
-
-                Button(
-                    onClick = { onAdminSignIn(email, password) },
-                    enabled = !isBusy,
-                    colors = ButtonDefaults.buttonColors(containerColor = DskRoyalPurple),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp)
-                        .testTag("admin_login_submit")
-                ) {
-                    if (isBusy) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), color = DskWhite, strokeWidth = 2.dp)
-                    } else {
-                        Text("Sign In as Administrator", fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-        }
-    }
-}
-
 private enum class AdminSectionTab(val label: String) {
     OVERVIEW("Dashboard"),
     MOVIES("Movies"),
@@ -163,28 +66,7 @@ fun AdminDashboardScreen(
     onDeleteKids: (KidsItem) -> Unit
 ) {
     if (!isAdminAuthorized) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(DskPitchBlack)
-                .statusBarsPadding(),
-            contentAlignment = Alignment.Center
-        ) {
-            GlassCard(modifier = Modifier.padding(24.dp)) {
-                Column(
-                    modifier = Modifier.padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Icon(Icons.Filled.GppBad, contentDescription = "Unauthorized", tint = DskError, modifier = Modifier.size(48.dp))
-                    Text("Admin Access Required", style = MaterialTheme.typography.headlineMedium)
-                    Text("Standard user accounts cannot access the DSK VIDEO Admin Panel.", style = MaterialTheme.typography.bodyMedium, color = DskSilver)
-                    Button(onClick = onBack, colors = ButtonDefaults.buttonColors(containerColor = DskCrimson)) {
-                        Text("Return")
-                    }
-                }
-            }
-        }
+        AdminAccessDeniedScreen(onBack = onBack)
         return
     }
 

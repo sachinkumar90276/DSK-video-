@@ -32,6 +32,11 @@ data class CatalogSnapshot(
     val isFromCache: Boolean = false
 )
 
+sealed interface AdminRegistrationOutcome {
+    data class Activated(val session: StoredSession) : AdminRegistrationOutcome
+    data class VerificationPending(val email: String, val message: String) : AdminRegistrationOutcome
+}
+
 class OttRepository(
     private val context: Context,
     val preferences: SessionPreferences
@@ -149,7 +154,7 @@ class OttRepository(
             val isAdmin = checkIsAdmin(user.id)
             if (requireAdmin && !isAdmin) {
                 currentAccessToken = ""
-                throw IllegalStateException("Access denied: This account does not have an 'admin' role in user_roles.")
+                throw IllegalStateException("Access denied: This account does not have an active admin role in admin_roles.")
             }
 
             ensureProfileRow(
@@ -169,6 +174,136 @@ class OttRepository(
             preferences.saveSession(
                 session.accessToken, session.refreshToken, session.userId,
                 session.email, rememberSession, isAdmin
+            )
+            session
+        }
+    }
+
+    suspend fun registerAdmin(
+        fullName: String,
+        email: String,
+        password: String,
+        secretCode: String
+    ): Result<AdminRegistrationOutcome> = withContext(Dispatchers.IO) {
+        if (!SupabaseConfig.isConfigured) {
+            return@withContext Result.failure(IllegalStateException("SUPABASE_ANON_KEY is not configured in AI Studio Secrets."))
+        }
+        runCatching {
+            val cleanName = fullName.trim()
+            val cleanEmail = email.trim()
+            val cleanSecret = secretCode.trim()
+
+            val signUpRes = authApi.signUp(
+                AuthSignUpRequest(
+                    email = cleanEmail,
+                    password = password,
+                    data = mapOf("username" to cleanName)
+                )
+            )
+            if (!signUpRes.isSuccessful) {
+                throw IllegalStateException(parseSupabaseError(signUpRes))
+            }
+            val body = signUpRes.body()
+            val uid = body?.user?.id.orEmpty()
+            val token = body?.accessToken
+
+            if (token.isNullOrBlank() || uid.isBlank()) {
+                return@runCatching AdminRegistrationOutcome.VerificationPending(
+                    email = cleanEmail,
+                    message = "Verification email sent to $cleanEmail. Confirm your email, then activate your Admin account on Admin Login using your Secret Code."
+                )
+            }
+
+            currentAccessToken = token
+            val rpcRes = restApi.registerAdminWithSecret(
+                RegisterAdminRpcRequest(fullName = cleanName, secretCode = cleanSecret)
+            )
+            if (!rpcRes.isSuccessful || rpcRes.body() != true) {
+                val errMsg = parseSupabaseError(rpcRes)
+                runCatching { authApi.logout() }
+                currentAccessToken = ""
+                preferences.clearSession()
+                throw IllegalStateException(errMsg)
+            }
+
+            val verifiedAdmin = checkIsAdmin(uid)
+            if (!verifiedAdmin) {
+                runCatching { authApi.logout() }
+                currentAccessToken = ""
+                preferences.clearSession()
+                throw IllegalStateException("Server-side admin role verification failed.")
+            }
+
+            ensureProfileRow(uid, cleanEmail, cleanName)
+            val session = StoredSession(
+                accessToken = token,
+                refreshToken = body.refreshToken.orEmpty(),
+                userId = uid,
+                email = cleanEmail,
+                rememberSession = true,
+                isAdmin = true
+            )
+            preferences.saveSession(
+                session.accessToken, session.refreshToken, session.userId,
+                session.email, true, true
+            )
+            AdminRegistrationOutcome.Activated(session)
+        }
+    }
+
+    suspend fun activateAdminWithSecret(
+        fullName: String,
+        email: String,
+        password: String,
+        secretCode: String
+    ): Result<StoredSession> = withContext(Dispatchers.IO) {
+        if (!SupabaseConfig.isConfigured) {
+            return@withContext Result.failure(IllegalStateException("SUPABASE_ANON_KEY is not configured in AI Studio Secrets."))
+        }
+        runCatching {
+            val cleanName = fullName.trim()
+            val cleanEmail = email.trim()
+            val res = authApi.signInWithPassword(AuthCredentials(cleanEmail, password))
+            if (!res.isSuccessful) {
+                throw IllegalStateException(parseSupabaseError(res))
+            }
+            val body = res.body() ?: throw IllegalStateException("Empty auth response.")
+            val token = body.accessToken ?: throw IllegalStateException("Missing access token.")
+            val user = body.user ?: throw IllegalStateException("Missing user info.")
+
+            currentAccessToken = token
+            val rpcRes = restApi.registerAdminWithSecret(
+                RegisterAdminRpcRequest(
+                    fullName = cleanName.ifBlank { (user.userMetadata?.get("username") as? String) ?: cleanEmail.substringBefore("@") },
+                    secretCode = secretCode.trim()
+                )
+            )
+            if (!rpcRes.isSuccessful || rpcRes.body() != true) {
+                val errMsg = parseSupabaseError(rpcRes)
+                runCatching { authApi.logout() }
+                currentAccessToken = ""
+                preferences.clearSession()
+                throw IllegalStateException(errMsg)
+            }
+
+            if (!checkIsAdmin(user.id)) {
+                runCatching { authApi.logout() }
+                currentAccessToken = ""
+                preferences.clearSession()
+                throw IllegalStateException("Server-side admin role verification failed.")
+            }
+
+            val session = StoredSession(
+                accessToken = token,
+                refreshToken = body.refreshToken.orEmpty(),
+                userId = user.id,
+                email = user.email ?: cleanEmail,
+                rememberSession = true,
+                isAdmin = true
+            )
+            preferences.saveSession(
+                session.accessToken, session.refreshToken, session.userId,
+                session.email, true, true
             )
             session
         }
@@ -206,6 +341,14 @@ class OttRepository(
 
     private suspend fun checkIsAdmin(userId: String): Boolean {
         if (userId.isBlank()) return false
+        val hasAdminRole = runCatching {
+            val res = restApi.getAdminRoles("eq.$userId")
+            res.isSuccessful && (res.body()?.any {
+                it.isActive && (it.role.equals("admin", ignoreCase = true) || it.role.equals("super_admin", ignoreCase = true))
+            } == true)
+        }.getOrDefault(false)
+        if (hasAdminRole) return true
+
         return runCatching {
             val res = restApi.getUserRoles("eq.$userId")
             res.isSuccessful && (res.body()?.any { it.role.equals("admin", ignoreCase = true) } == true)

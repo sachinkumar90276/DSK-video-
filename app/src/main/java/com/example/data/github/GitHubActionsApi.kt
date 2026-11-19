@@ -304,6 +304,7 @@ object ApkBuildDiagnosticsEngine {
             )
         } else {
             val hasAndroidSdk = workflowYmlText.contains("setup-android") || workflowYmlText.contains("ANDROID_SDK_ROOT")
+            val hasLicenseAcceptance = workflowYmlText.contains("accept-android-sdk-licenses: true")
             if (!hasAndroidSdk) {
                 items += BuildDiagnosticItem(
                     category = "android_sdk",
@@ -315,7 +316,11 @@ object ApkBuildDiagnosticsEngine {
                 items += BuildDiagnosticItem(
                     category = "android_sdk",
                     title = "Android SDK & Gradle workflow ready",
-                    detail = ".github/workflows/build-apk.yml configures Android SDK & Gradle.",
+                    detail = if (hasLicenseAcceptance) {
+                        "setup-android@v3 with accept-android-sdk-licenses: true and SDK packages configured."
+                    } else {
+                        ".github/workflows/build-apk.yml configures Android SDK & Gradle."
+                    },
                     severity = DiagnosticSeverity.PASS
                 )
             }
