@@ -1,0 +1,227 @@
+name: DSK VIDEO Android APK Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "APK Build Type (debug, release, or both)"
+        required: false
+        default: "both"
+        type: choice
+        options:
+          - both
+          - debug
+          - release
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dsk-video-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-android-apk:
+    name: Build DSK VIDEO APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate repository & package configuration
+        run: |
+          set -e
+          if [ ! -f "package.json" ]; then
+            echo "::error::Missing package.json at repository root."
+            exit 1
+          fi
+          if [ ! -f "capacitor.config.ts" ]; then
+            echo "::error::Missing capacitor.config.ts at repository root."
+            exit 1
+          fi
+          if ! grep -q 'com\.dskvideo\.ott' capacitor.config.ts; then
+            echo "::error::Invalid package ID in capacitor.config.ts. Expected com.dskvideo.ott."
+            exit 1
+          fi
+          if [ ! -f "app/build.gradle.kts" ]; then
+            echo "::error::Missing app/build.gradle.kts."
+            exit 1
+          fi
+          if ! grep -q 'applicationId = "com.dskvideo.ott"' app/build.gradle.kts; then
+            echo "::error::Invalid package ID in app/build.gradle.kts. Expected com.dskvideo.ott."
+            exit 1
+          fi
+          echo "Repository, Capacitor config, and package ID com.dskvideo.ott verified."
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Node.js & Capacitor dependencies
+        run: |
+          set -e
+          if ! node -e "const p=require('./package.json'); if(!p.scripts||!p.scripts.build){process.exit(1)}"; then
+            echo "::error::Missing build script in package.json."
+            exit 1
+          fi
+          if [ -f "package-lock.json" ]; then
+            npm ci
+          else
+            npm install
+          fi
+          for pkg in "@capacitor/core" "@capacitor/cli" "@capacitor/android"; do
+            if [ ! -d "node_modules/$pkg" ]; then
+              echo "::error::Missing Capacitor dependency: $pkg"
+              exit 1
+            fi
+          done
+
+      - name: Build web bundle & detect web directory
+        run: |
+          set -e
+          npm run build
+          WEB_DIR=""
+          for candidate in dist build out www; do
+            if [ -d "$candidate" ]; then
+              WEB_DIR="$candidate"
+              break
+            fi
+          done
+          if [ -z "$WEB_DIR" ]; then
+            echo "::error::Web build directory not found (checked dist, build, out, www)."
+            exit 1
+          fi
+          echo "Detected web build directory: $WEB_DIR"
+
+      - name: Configure & verify Capacitor Android integration
+        run: |
+          set -e
+          if [ ! -d "android" ] && [ ! -d "app/src/main" ]; then
+            npx cap add android
+          fi
+          if [ -d "android" ]; then
+            npx cap sync android
+          else
+            echo "Native Android Gradle module detected at app/src/main; preserving existing Kotlin/Compose app."
+          fi
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Verify Android SDK installation
+        run: |
+          if [ -z "${ANDROID_HOME:-}" ] && [ -z "${ANDROID_SDK_ROOT:-}" ]; then
+            echo "::error::Missing Android SDK (ANDROID_HOME / ANDROID_SDK_ROOT not set)."
+            exit 1
+          fi
+          echo "Android SDK ready."
+
+      - name: Setup Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Prepare environment & debug keystore
+        env:
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          set -e
+          if [ ! -f ".env" ] && [ -f ".env.example" ]; then
+            cp .env.example .env
+          fi
+          if [ -n "${SUPABASE_ANON_KEY:-}" ]; then
+            sed -i "s|^SUPABASE_ANON_KEY=.*|SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}|" .env || true
+          fi
+          if [ ! -f "debug.keystore" ] && [ -f "debug.keystore.base64" ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          fi
+
+      - name: Build Debug APK
+        if: ${{ inputs.build_type != 'release' }}
+        run: |
+          set -e
+          mkdir -p build-artifacts
+          gradle assembleDebug --no-daemon --stacktrace
+          DEBUG_APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          if [ -z "$DEBUG_APK" ]; then
+            echo "::error::Gradle did not produce app-debug.apk."
+            exit 1
+          fi
+          cp "$DEBUG_APK" build-artifacts/app-debug.apk
+          echo "Generated build-artifacts/app-debug.apk"
+
+      - name: Check Release Signing Secrets
+        id: signing_check
+        env:
+          HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+          HAS_STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD != '' }}
+          HAS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS != '' }}
+          HAS_KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD != '' }}
+        run: |
+          if [ "$HAS_KEYSTORE" = "true" ] && [ "$HAS_STORE_PASS" = "true" ] && [ "$HAS_KEY_PASS" = "true" ]; then
+            echo "can_sign=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "can_sign=false" >> "$GITHUB_OUTPUT"
+            if [ "${{ inputs.build_type }}" = "release" ]; then
+              echo "::error::Missing release signing configuration (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD)."
+              exit 1
+            else
+              echo "::notice::Release signing secrets not configured. Proceeding with app-debug.apk."
+            fi
+          fi
+
+      - name: Build Signed Release APK
+        if: ${{ steps.signing_check.outputs.can_sign == 'true' && inputs.build_type != 'debug' }}
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
+        run: |
+          set -e
+          mkdir -p build-artifacts
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
+          gradle assembleRelease --no-daemon --stacktrace
+          RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          if [ -z "$RELEASE_APK" ]; then
+            echo "::error::Gradle did not produce app-release.apk."
+            rm -f "$KEYSTORE_PATH"
+            exit 1
+          fi
+          cp "$RELEASE_APK" build-artifacts/app-release.apk
+          rm -f "$KEYSTORE_PATH"
+          echo "Generated signed build-artifacts/app-release.apk"
+
+      - name: Clean sensitive temporary files
+        if: always()
+        run: |
+          rm -f "${{ github.workspace }}/my-upload-key.jks"
+          rm -f .env
+
+      - name: Upload DSK-VIDEO-APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSK-VIDEO-APK-build-${{ github.run_number }}
+          path: build-artifacts/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Write Build Summary
+        if: always()
+        run: |
+          echo "### DSK VIDEO APK Builder - Build #${{ github.run_number }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Package ID:** \`com.dskvideo.ott\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Branch:** \`${{ github.ref_name }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Artifact:** \`DSK-VIDEO-APK-build-${{ github.run_number }}\`" >> "$GITHUB_STEP_SUMMARY"
+          ls -lh build-artifacts/ 2>/dev/null || true

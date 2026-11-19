@@ -19,6 +19,7 @@ sealed interface DskRoute {
     @Serializable data object Settings : DskRoute
     @Serializable data object WatchHistory : DskRoute
     @Serializable data object AdminDashboard : DskRoute
+    @Serializable data object ApkBuilder : DskRoute
     @Serializable data class MovieDetail(val movieId: String) : DskRoute
     @Serializable data class SeriesDetail(val seriesId: String) : DskRoute
     @Serializable data class Player(

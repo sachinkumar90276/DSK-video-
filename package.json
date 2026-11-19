@@ -1,0 +1,16 @@
+{
+  "name": "dsk-video-ott",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DSK VIDEO - Entertainment Without Limits (Android & Capacitor APK Builder)",
+  "scripts": {
+    "build": "node scripts/prepare-web-dist.mjs",
+    "cap:sync": "npx cap sync android",
+    "apk:validate": "node scripts/prepare-web-dist.mjs --verify-only"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/cli": "^6.2.0",
+    "@capacitor/core": "^6.2.0"
+  }
+}

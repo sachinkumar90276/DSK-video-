@@ -60,6 +60,7 @@ fun DskVideoApp(vm: MainViewModel) {
     val activeMedia by vm.activePlayerMedia.collectAsStateWithLifecycle()
     val authBusy by vm.authBusy.collectAsStateWithLifecycle()
     val authError by vm.authError.collectAsStateWithLifecycle()
+    val apkBuilderState by vm.apkBuilderState.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -438,6 +439,7 @@ fun DskVideoApp(vm: MainViewModel) {
                                     vm.refreshCatalog()
                                     vm.loadAdminOverview()
                                 },
+                                onOpenApkBuilder = { navController.navigate(DskRoute.ApkBuilder) },
                                 onInspectSmartUrl = vm::inspectSmartUrl,
                                 onClearSmartUrl = vm::clearSmartUrlMetadata,
                                 onSaveMovie = vm::saveMovie,
@@ -455,6 +457,15 @@ fun DskVideoApp(vm: MainViewModel) {
                                 onDeleteSports = vm::deleteSportsItem,
                                 onSaveKids = vm::saveKidsItem,
                                 onDeleteKids = vm::deleteKidsItem
+                            )
+                        }
+
+                        composable<DskRoute.ApkBuilder> {
+                            ApkBuilderScreen(
+                                uiState = apkBuilderState,
+                                onConnectAndInspect = vm::connectAndInspectApkBuilder,
+                                onRebuildApk = vm::triggerApkRebuild,
+                                onBack = { navController.popBackStack() }
                             )
                         }
 

@@ -143,6 +143,7 @@ fun AdminDashboardScreen(
     catalog: CatalogSnapshot,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
+    onOpenApkBuilder: () -> Unit,
     onInspectSmartUrl: (String) -> Unit,
     onClearSmartUrl: () -> Unit,
     onSaveMovie: (MovieItem, () -> Unit) -> Unit,
@@ -230,6 +231,9 @@ fun AdminDashboardScreen(
                 }
             }
             Row {
+                IconButton(onClick = onOpenApkBuilder, modifier = Modifier.testTag("admin_apk_builder_button")) {
+                    Icon(Icons.Filled.Android, contentDescription = "DSK VIDEO APK Builder", tint = DskSuccess)
+                }
                 IconButton(onClick = { showSchemaDialog = true }, modifier = Modifier.testTag("admin_schema_button")) {
                     Icon(Icons.Filled.Storage, contentDescription = "Supabase Schema", tint = DskNeonViolet)
                 }

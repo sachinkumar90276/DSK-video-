@@ -4,6 +4,9 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.github.ApkBuilderRepository
+import com.example.data.github.ApkBuilderUiState
+import com.example.data.github.GitHubConnectionStatus
 import com.example.data.local.SessionPreferences
 import com.example.data.local.StoredSession
 import com.example.data.model.*
@@ -51,9 +54,13 @@ data class AdminState(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences = SessionPreferences(application.applicationContext)
     private val repository = OttRepository(application.applicationContext, preferences)
+    private val apkBuilderRepository = ApkBuilderRepository(application.applicationContext)
 
     private val _authState = MutableStateFlow<AuthState>(AuthState.Checking)
     val authState: StateFlow<AuthState> = _authState.asStateFlow()
+
+    private val _apkBuilderState = MutableStateFlow(ApkBuilderUiState())
+    val apkBuilderState: StateFlow<ApkBuilderUiState> = _apkBuilderState.asStateFlow()
 
     private val _catalogState = MutableStateFlow<CatalogState>(CatalogState.Loading)
     val catalogState: StateFlow<CatalogState> = _catalogState.asStateFlow()
@@ -89,6 +96,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         bootstrap()
+        loadApkBuilderConfig()
+    }
+
+    private fun loadApkBuilderConfig() {
+        viewModelScope.launch {
+            val (cfg, _) = apkBuilderRepository.loadSavedCredentials()
+            _apkBuilderState.update { it.copy(config = cfg) }
+        }
+    }
+
+    fun connectAndInspectApkBuilder(owner: String, repo: String, branch: String, token: String?) {
+        viewModelScope.launch {
+            apkBuilderRepository.saveConfig(owner, repo, branch, token)
+            _apkBuilderState.update {
+                it.copy(
+                    connectionStatus = GitHubConnectionStatus.CONNECTING,
+                    statusMessage = "Connecting to GitHub Actions..."
+                )
+            }
+            val result = apkBuilderRepository.inspectAndFetchStatus(owner, repo, branch, token)
+            _apkBuilderState.value = result
+        }
+    }
+
+    fun triggerApkRebuild(buildType: String) {
+        val current = _apkBuilderState.value
+        viewModelScope.launch {
+            _apkBuilderState.update { it.copy(isTriggeringBuild = true) }
+            apkBuilderRepository.triggerRebuild(
+                owner = current.config.owner,
+                repo = current.config.repo,
+                branch = current.config.branch,
+                buildType = buildType
+            ).onSuccess { msg ->
+                _uiMessage.tryEmit(msg)
+                delay(2000)
+                val updated = apkBuilderRepository.inspectAndFetchStatus(
+                    current.config.owner,
+                    current.config.repo,
+                    current.config.branch
+                )
+                _apkBuilderState.value = updated.copy(isTriggeringBuild = false)
+            }.onFailure { err ->
+                _uiMessage.tryEmit(err.message ?: "Failed to dispatch APK rebuild")
+                _apkBuilderState.update { it.copy(isTriggeringBuild = false) }
+            }
+        }
     }
 
     private fun bootstrap() {

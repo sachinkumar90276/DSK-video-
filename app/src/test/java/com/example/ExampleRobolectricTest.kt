@@ -7,17 +7,22 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.github.ApkBuildDiagnosticsEngine
+import com.example.data.github.ApkBuilderUiState
+import com.example.data.github.DiagnosticSeverity
 import com.example.data.model.AdminDashboardStats
 import com.example.data.model.StreamSourceType
 import com.example.data.repository.CatalogSnapshot
 import com.example.data.supabase.SmartUrlImporter
 import com.example.data.supabase.SupabaseConfig
 import com.example.ui.screens.AdminDashboardScreen
+import com.example.ui.screens.ApkBuilderScreen
 import com.example.ui.screens.AuthScreen
 import com.example.ui.theme.DskVideoTheme
 import com.example.ui.viewmodel.AdminState
 import com.example.ui.viewmodel.AuthState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -63,6 +68,34 @@ class ExampleRobolectricTest {
     }
 
     @Test
+    fun `apk diagnostics engine detects missing config and passes valid setup`() {
+        val missingResults = ApkBuildDiagnosticsEngine.evaluateRepositoryFiles(
+            packageJsonText = null,
+            capacitorConfigText = "appId: 'bad'",
+            workflowYmlText = "name: Empty",
+            appBuildGradleText = null,
+            failedSteps = listOf("Build Debug APK")
+        )
+        assertTrue(missingResults.any { it.title.contains("Missing package.json") && it.severity == DiagnosticSeverity.ERROR })
+        assertTrue(missingResults.any { it.title.contains("Invalid package ID") && it.severity == DiagnosticSeverity.ERROR })
+        assertTrue(missingResults.any { it.title.contains("Missing Android SDK") && it.severity == DiagnosticSeverity.ERROR })
+        assertTrue(missingResults.any { it.title.contains("Build step failed: Build Debug APK") && it.severity == DiagnosticSeverity.ERROR })
+
+        val validResults = ApkBuildDiagnosticsEngine.evaluateRepositoryFiles(
+            packageJsonText = """
+                {
+                  "scripts": {"build": "node scripts/prepare-web-dist.mjs"},
+                  "dependencies": {"@capacitor/core": "^6.2.0", "@capacitor/cli": "^6.2.0", "@capacitor/android": "^6.2.0"}
+                }
+            """.trimIndent(),
+            capacitorConfigText = "const config = { appId: 'com.dskvideo.ott', webDir: 'dist' };",
+            workflowYmlText = "uses: android-actions/setup-android@v3\nANDROID_KEYSTORE_BASE64\nANDROID_KEYSTORE_PASSWORD\nANDROID_KEY_ALIAS\nANDROID_KEY_PASSWORD",
+            appBuildGradleText = "applicationId = \"com.dskvideo.ott\""
+        )
+        assertTrue(validResults.all { it.severity == DiagnosticSeverity.PASS })
+    }
+
+    @Test
     fun `non admin users are blocked from admin dashboard`() {
         composeRule.setContent {
             DskVideoTheme {
@@ -72,6 +105,7 @@ class ExampleRobolectricTest {
                     catalog = CatalogSnapshot(),
                     onBack = {},
                     onRefresh = {},
+                    onOpenApkBuilder = {},
                     onInspectSmartUrl = {},
                     onClearSmartUrl = {},
                     onSaveMovie = { _, _ -> },
@@ -117,5 +151,23 @@ class ExampleRobolectricTest {
         composeRule.waitForIdle()
         composeRule.onNodeWithText("Sign In to Watch").assertIsDisplayed()
         composeRule.onNodeWithTag("open_admin_login_button").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `apk builder screen shows real disconnected status and controls`() {
+        composeRule.setContent {
+            DskVideoTheme {
+                ApkBuilderScreen(
+                    uiState = ApkBuilderUiState(),
+                    onConnectAndInspect = { _, _, _, _ -> },
+                    onRebuildApk = {},
+                    onBack = {}
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("DSK VIDEO APK BUILDER").assertIsDisplayed()
+        composeRule.onNodeWithText("Disconnected").assertIsDisplayed()
+        composeRule.onNodeWithTag("connect_github_button").performScrollTo().assertIsDisplayed()
     }
 }
