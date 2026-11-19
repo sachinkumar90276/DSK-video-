@@ -1,0 +1,6 @@
+{
+  "name": "DSK VIDEO",
+  "description": "DSK VIDEO - Entertainment Without Limits. OTT streaming platform by DSK OFFICIAL.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
