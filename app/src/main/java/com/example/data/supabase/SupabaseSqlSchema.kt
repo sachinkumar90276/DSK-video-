@@ -42,6 +42,12 @@ CREATE TABLE IF NOT EXISTS public.admin_authorized_emails (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+INSERT INTO public.admin_authorized_emails (email, role)
+VALUES
+    ('sachin.vc.rajput@gmail.com', 'super_admin'),
+    ('s7165349@gmail.com', 'super_admin')
+ON CONFLICT (email) DO NOTHING;
+
 CREATE OR REPLACE FUNCTION public.is_admin()
 RETURNS BOOLEAN LANGUAGE SQL SECURITY DEFINER SET search_path = public STABLE AS $$
     SELECT EXISTS (SELECT 1 FROM public.admin_roles WHERE user_id = auth.uid() AND is_active = TRUE)

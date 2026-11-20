@@ -306,6 +306,7 @@ fun MovieEditorDialog(
     smartMeta: SmartUrlMetadata?,
     isInspecting: Boolean,
     onInspectUrl: (String) -> Unit,
+    onSearchTmdb: (String) -> Unit = {},
     onDismiss: () -> Unit,
     onSave: (MovieItem) -> Unit
 ) {
@@ -358,6 +359,15 @@ fun MovieEditorDialog(
                     }
                 )
                 OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Movie Title*") }, singleLine = true)
+                OutlinedButton(
+                    onClick = { onSearchTmdb(title) },
+                    enabled = title.isNotBlank() && !isInspecting,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Filled.Movie, contentDescription = null, tint = DskNeonViolet)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Fetch Title & Poster from TMDB", color = DskWhite)
+                }
                 OutlinedTextField(value = description, onValueChange = { description = it }, label = { Text("Description") }, maxLines = 3)
                 OutlinedTextField(value = posterUrl, onValueChange = { posterUrl = it }, label = { Text("Poster URL") }, singleLine = true)
                 OutlinedTextField(value = bannerUrl, onValueChange = { bannerUrl = it }, label = { Text("Banner URL") }, singleLine = true)
@@ -423,6 +433,9 @@ fun MovieEditorDialog(
 @Composable
 fun SeriesEditorDialog(
     initial: WebSeriesItem,
+    smartMeta: SmartUrlMetadata? = null,
+    isInspecting: Boolean = false,
+    onSearchTmdb: (String) -> Unit = {},
     onDismiss: () -> Unit,
     onSave: (WebSeriesItem) -> Unit
 ) {
@@ -446,6 +459,37 @@ fun SeriesEditorDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Series Title*") }, singleLine = true)
+                OutlinedButton(
+                    onClick = { onSearchTmdb(title) },
+                    enabled = title.isNotBlank() && !isInspecting,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Filled.Tv, contentDescription = null, tint = DskNeonViolet)
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (isInspecting) "Searching TMDB..." else "Fetch Series Info from TMDB", color = DskWhite)
+                }
+                if (smartMeta != null && smartMeta.statusNote.isNotBlank()) {
+                    Text(
+                        text = smartMeta.statusNote,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (smartMeta.isPlayable) DskSuccess else DskWarning
+                    )
+                    if (smartMeta.title.isNotBlank() || smartMeta.thumbnailUrl.isNotBlank()) {
+                        TextButton(
+                            onClick = {
+                                if (smartMeta.title.isNotBlank()) title = smartMeta.title
+                                if (smartMeta.description.isNotBlank()) description = smartMeta.description
+                                if (smartMeta.thumbnailUrl.isNotBlank()) {
+                                    posterUrl = smartMeta.thumbnailUrl
+                                    bannerUrl = smartMeta.thumbnailUrl
+                                }
+                                if (smartMeta.language.isNotBlank()) language = smartMeta.language
+                            }
+                        ) {
+                            Text("Apply TMDB Metadata", color = DskNeonViolet)
+                        }
+                    }
+                }
                 OutlinedTextField(value = description, onValueChange = { description = it }, label = { Text("Description") }, maxLines = 3)
                 OutlinedTextField(value = posterUrl, onValueChange = { posterUrl = it }, label = { Text("Poster URL") }, singleLine = true)
                 OutlinedTextField(value = bannerUrl, onValueChange = { bannerUrl = it }, label = { Text("Banner URL") }, singleLine = true)

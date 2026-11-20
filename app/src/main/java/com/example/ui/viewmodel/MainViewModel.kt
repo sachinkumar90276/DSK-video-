@@ -43,6 +43,19 @@ data class SearchResults(
     val suggestions: List<String> = emptyList()
 )
 
+data class ApiKeysUiState(
+    val config: ApiKeysConfig = ApiKeysConfig(),
+    val isSaving: Boolean = false,
+    val testingService: String? = null,
+    val statusByService: Map<String, Pair<Boolean, String>> = emptyMap()
+)
+
+data class AdminPasswordUiState(
+    val isBusy: Boolean = false,
+    val successMessage: String? = null,
+    val errorMessage: String? = null
+)
+
 data class AdminState(
     val isLoading: Boolean = false,
     val stats: AdminDashboardStats = AdminDashboardStats(),
@@ -84,6 +97,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isBackendConfigured = MutableStateFlow(SupabaseConfig.isConfigured)
     val isBackendConfigured: StateFlow<Boolean> = _isBackendConfigured.asStateFlow()
 
+    private val _apiKeysState = MutableStateFlow(ApiKeysUiState())
+    val apiKeysState: StateFlow<ApiKeysUiState> = _apiKeysState.asStateFlow()
+
+    private val _adminPasswordState = MutableStateFlow(AdminPasswordUiState())
+    val adminPasswordState: StateFlow<AdminPasswordUiState> = _adminPasswordState.asStateFlow()
+
     private val _uiMessage = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val uiMessage: SharedFlow<String> = _uiMessage.asSharedFlow()
 
@@ -101,6 +120,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         bootstrap()
         loadApkBuilderConfig()
+        loadAllApiKeys()
     }
 
     private fun loadApkBuilderConfig() {
@@ -108,6 +128,134 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val (cfg, _) = apkBuilderRepository.loadSavedCredentials()
             _apkBuilderState.update { it.copy(config = cfg) }
         }
+    }
+
+    fun loadAllApiKeys() {
+        viewModelScope.launch {
+            repository.loadRuntimeSupabaseConfig()
+            val stored = repository.getAllStoredApiKeys()
+            val (ghCfg, ghToken) = apkBuilderRepository.loadSavedCredentials()
+            _apiKeysState.update {
+                it.copy(
+                    config = stored.copy(
+                        githubOwner = ghCfg.owner,
+                        githubRepo = ghCfg.repo,
+                        githubBranch = ghCfg.branch,
+                        githubToken = ghToken
+                    )
+                )
+            }
+            _isBackendConfigured.value = SupabaseConfig.isConfigured
+        }
+    }
+
+    fun saveAllApiKeys(config: ApiKeysConfig) {
+        viewModelScope.launch {
+            _apiKeysState.update { it.copy(isSaving = true) }
+            repository.saveAllApiKeys(config)
+                .onSuccess {
+                    apkBuilderRepository.saveConfig(
+                        owner = config.githubOwner,
+                        repo = config.githubRepo,
+                        branch = config.githubBranch,
+                        token = config.githubToken.takeIf { it.isNotBlank() }
+                    )
+                    val (updatedGh, updatedToken) = apkBuilderRepository.loadSavedCredentials()
+                    _apkBuilderState.update { it.copy(config = updatedGh) }
+                    _isBackendConfigured.value = SupabaseConfig.isConfigured
+                    _apiKeysState.update {
+                        it.copy(
+                            config = config.copy(githubToken = updatedToken),
+                            isSaving = false
+                        )
+                    }
+                    _uiMessage.tryEmit("All API keys saved & activated!")
+                    if (SupabaseConfig.isConfigured) {
+                        refreshCatalog()
+                    }
+                }
+                .onFailure { err ->
+                    _apiKeysState.update { it.copy(isSaving = false) }
+                    _uiMessage.tryEmit(err.message ?: "Failed to save API keys.")
+                }
+        }
+    }
+
+    fun testApiKey(service: String, config: ApiKeysConfig) {
+        viewModelScope.launch {
+            _apiKeysState.update { it.copy(testingService = service) }
+            repository.saveAllApiKeys(config)
+            _isBackendConfigured.value = SupabaseConfig.isConfigured
+            val result: Result<String> = when (service) {
+                "supabase" -> repository.testSupabaseKey(config.supabaseUrl, config.supabaseAnonKey)
+                "github" -> {
+                    apkBuilderRepository.saveConfig(
+                        owner = config.githubOwner,
+                        repo = config.githubRepo,
+                        branch = config.githubBranch,
+                        token = config.githubToken.takeIf { it.isNotBlank() }
+                    )
+                    val inspected = apkBuilderRepository.inspectAndFetchStatus(
+                        owner = config.githubOwner,
+                        repo = config.githubRepo,
+                        branch = config.githubBranch,
+                        tokenOverride = config.githubToken.takeIf { it.isNotBlank() }
+                    )
+                    _apkBuilderState.value = inspected
+                    if (inspected.connectionStatus == GitHubConnectionStatus.CONNECTED) {
+                        Result.success("${inspected.statusMessage} (${inspected.buildStatus})")
+                    } else {
+                        Result.failure(IllegalStateException(inspected.statusMessage))
+                    }
+                }
+                "tmdb" -> repository.testTmdbKey(config.tmdbApiKey)
+                "youtube" -> repository.testYoutubeKey(config.youtubeApiKey)
+                "firebase" -> repository.testFirebaseKey(config.firebaseApiKey)
+                "cdn" -> {
+                    if (config.mediaCdnApiKey.isBlank()) {
+                        Result.failure(IllegalStateException("Enter a Media CDN / Stream API Key first."))
+                    } else {
+                        val header = config.mediaCdnHeaderName.ifBlank { "X-API-Key" }
+                        Result.success("Active: Player & Smart Importer attach '$header' automatically.")
+                    }
+                }
+                else -> Result.failure(IllegalStateException("Unknown service"))
+            }
+            val statusPair = result.fold(
+                onSuccess = { true to it },
+                onFailure = { false to (it.message ?: "Verification failed") }
+            )
+            _apiKeysState.update { state ->
+                state.copy(
+                    testingService = null,
+                    config = config,
+                    statusByService = state.statusByService + (service to statusPair)
+                )
+            }
+        }
+    }
+
+    fun changeAdminPassword(currentPassword: String, newPassword: String, confirmPassword: String) {
+        val email = currentEmail()
+        if (email.isBlank()) {
+            _adminPasswordState.value = AdminPasswordUiState(errorMessage = "Sign in to Admin Studio first.")
+            return
+        }
+        viewModelScope.launch {
+            _adminPasswordState.value = AdminPasswordUiState(isBusy = true)
+            repository.changeAdminPassword(email, currentPassword, newPassword, confirmPassword)
+                .onSuccess { msg ->
+                    _adminPasswordState.value = AdminPasswordUiState(successMessage = msg)
+                    _uiMessage.tryEmit(msg)
+                }
+                .onFailure { err ->
+                    _adminPasswordState.value = AdminPasswordUiState(errorMessage = err.message ?: "Password update failed.")
+                }
+        }
+    }
+
+    fun clearAdminPasswordFeedback() {
+        _adminPasswordState.value = AdminPasswordUiState()
     }
 
     fun connectAndInspectApkBuilder(owner: String, repo: String, branch: String, token: String?) {
@@ -171,6 +319,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             repository.saveSupabaseCredentials(url, anonKey)
                 .onSuccess {
                     _isBackendConfigured.value = SupabaseConfig.isConfigured
+                    _apiKeysState.update { st ->
+                        st.copy(config = st.config.copy(supabaseUrl = SupabaseConfig.baseUrl, supabaseAnonKey = anonKey.trim()))
+                    }
                     _authError.value = null
                     _uiMessage.tryEmit("Backend connected to ${SupabaseConfig.baseUrl}")
                 }
@@ -686,6 +837,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _adminState.update { it.copy(isInspectingUrl = true, smartUrlMetadata = null) }
             val meta = repository.inspectSmartUrl(url)
+            _adminState.update { it.copy(isInspectingUrl = false, smartUrlMetadata = meta) }
+        }
+    }
+
+    fun searchTmdbMetadata(query: String, isSeries: Boolean) {
+        viewModelScope.launch {
+            _adminState.update { it.copy(isInspectingUrl = true, smartUrlMetadata = null) }
+            val meta = repository.searchTmdb(query, isSeries)
             _adminState.update { it.copy(isInspectingUrl = false, smartUrlMetadata = meta) }
         }
     }

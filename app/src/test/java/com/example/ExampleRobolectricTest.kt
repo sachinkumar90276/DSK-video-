@@ -2,10 +2,12 @@ package com.example
 
 import android.content.Context
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.github.ApkBuildDiagnosticsEngine
 import com.example.data.github.ApkBuilderUiState
@@ -14,6 +16,7 @@ import com.example.data.model.AdminDashboardStats
 import com.example.data.model.AdminRegistrationFormValidator
 import com.example.data.model.StreamSourceType
 import com.example.data.repository.CatalogSnapshot
+import com.example.data.model.AppSettingsState
 import com.example.data.supabase.SmartUrlImporter
 import com.example.data.supabase.SupabaseConfig
 import com.example.ui.screens.AdminAccessDeniedScreen
@@ -22,9 +25,18 @@ import com.example.ui.screens.AdminLoginScreen
 import com.example.ui.screens.AdminRegisterScreen
 import com.example.ui.screens.ApkBuilderScreen
 import com.example.ui.screens.AuthScreen
+import com.example.ui.screens.ProfileScreen
 import com.example.ui.theme.DskVideoTheme
 import com.example.ui.viewmodel.AdminState
 import com.example.ui.viewmodel.AuthState
+import com.example.ui.viewmodel.CatalogState
+import com.example.data.local.SessionPreferences
+import com.example.data.model.ApiKeysConfig
+import com.example.ui.screens.AdminApiKeysHubContent
+import com.example.ui.screens.AdminSecuritySettingsContent
+import com.example.ui.viewmodel.AdminPasswordUiState
+import com.example.ui.viewmodel.ApiKeysUiState
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -160,7 +172,34 @@ class ExampleRobolectricTest {
         composeRule.onNodeWithTag("backend_anon_key_input").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("backend_key_save_button").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("Sign In to Watch").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithTag("open_admin_login_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("open_admin_login_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("brand_logo_admin_trigger").assertExists()
+    }
+
+    @Test
+    fun `profile screen hides admin option for regular users`() {
+        composeRule.setContent {
+            DskVideoTheme {
+                ProfileScreen(
+                    email = "viewer@dskvideo.com",
+                    profile = null,
+                    isAdmin = false,
+                    settings = AppSettingsState(),
+                    catalogState = CatalogState.Ready(CatalogSnapshot()),
+                    onUpdateProfile = { _, _, _ -> },
+                    onChangePassword = {},
+                    onSetProfilePin = {},
+                    onVerifyProfilePin = { true },
+                    onOpenWatchlist = {},
+                    onOpenWatchHistory = {},
+                    onOpenSettings = {},
+                    onOpenAdminPanel = {},
+                    onLogout = {}
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("profile_admin_row").assertDoesNotExist()
     }
 
     @Test
@@ -252,5 +291,76 @@ class ExampleRobolectricTest {
         composeRule.waitForIdle()
         composeRule.onNodeWithText("Admin Access Required").assertIsDisplayed()
         composeRule.onNodeWithTag("admin_access_denied_return").assertIsDisplayed()
+    }
+
+    @Test
+    fun `owner admin credential verifies initial password and allows in-app password change`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = SessionPreferences(context)
+        assertTrue(prefs.verifyOwnerAdminPassword("s7165349@gmail.com", "Sachin@2003"))
+        assertFalse(prefs.verifyOwnerAdminPassword("s7165349@gmail.com", "WrongPass"))
+        assertFalse(prefs.verifyOwnerAdminPassword("other@example.com", "Sachin@2003"))
+
+        val changeResult = prefs.updateOwnerAdminPassword("Sachin@2003", "NewAdmin@2026")
+        assertTrue(changeResult.isSuccess)
+        assertFalse(prefs.verifyOwnerAdminPassword("s7165349@gmail.com", "Sachin@2003"))
+        assertTrue(prefs.verifyOwnerAdminPassword("s7165349@gmail.com", "NewAdmin@2026"))
+
+        // Restore so test remains repeatable
+        assertTrue(prefs.updateOwnerAdminPassword("NewAdmin@2026", "Sachin@2003").isSuccess)
+    }
+
+    @Test
+    fun `admin api keys hub renders all configurable service key fields`() {
+        composeRule.setContent {
+            DskVideoTheme {
+                AdminApiKeysHubContent(
+                    apiKeysState = ApiKeysUiState(config = ApiKeysConfig()),
+                    onSaveAll = {},
+                    onTestService = { _, _ -> }
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("save_all_api_keys_top").assertIsDisplayed()
+        val listNode = composeRule.onNodeWithTag("admin_api_keys_list")
+        listOf(
+            "api_supabase_anon_input",
+            "api_youtube_key_input",
+            "api_tmdb_key_input",
+            "api_firebase_key_input",
+            "api_gh_token_input",
+            "api_cdn_key_input"
+        ).forEach { tag ->
+            listNode.performScrollToNode(hasTestTag(tag))
+            composeRule.onNodeWithTag(tag).assertIsDisplayed()
+        }
+    }
+
+    @Test
+    fun `admin security screen exposes in-app admin password change form`() {
+        composeRule.setContent {
+            DskVideoTheme {
+                AdminSecuritySettingsContent(
+                    adminEmail = "s7165349@gmail.com",
+                    passwordState = AdminPasswordUiState(),
+                    onChangeAdminPassword = { _, _, _ -> },
+                    onClearFeedback = {}
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("s7165349@gmail.com").assertIsDisplayed()
+        composeRule.onNodeWithTag("admin_current_password_input").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("admin_new_password_input").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("admin_confirm_new_password_input").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("change_admin_password_submit").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `youtube iso duration parser extracts rounded minutes`() {
+        assertEquals(84, SmartUrlImporter.parseIsoDurationMinutes("PT1H23M45S"))
+        assertEquals(5, SmartUrlImporter.parseIsoDurationMinutes("PT5M10S"))
+        assertEquals(1, SmartUrlImporter.parseIsoDurationMinutes("PT42S"))
     }
 }

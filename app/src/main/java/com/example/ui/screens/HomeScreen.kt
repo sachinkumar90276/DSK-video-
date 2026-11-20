@@ -118,7 +118,11 @@ fun HomeScreen(
                     CinemaEmptyState(
                         icon = Icons.Filled.MovieFilter,
                         title = "Catalog Ready for Content",
-                        message = "Your DSK VIDEO backend is connected. Publish Movies, Web Series, Live TV, Sports, or Kids titles from the Admin Panel to light up every homepage row.",
+                        message = if (isAdmin) {
+                            "Your DSK VIDEO backend is connected. Publish Movies, Web Series, Live TV, Sports, or Kids titles from the Admin Panel to light up every homepage row."
+                        } else {
+                            "Your DSK VIDEO catalog is connected. Tap Refresh Catalog to check for newly published Movies, Web Series, Live TV, Sports, or Kids titles."
+                        },
                         actionLabel = if (isAdmin) "Open Admin Panel" else "Refresh Catalog",
                         onAction = if (isAdmin) onAdminClick else onRefresh
                     )

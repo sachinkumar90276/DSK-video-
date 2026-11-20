@@ -98,7 +98,7 @@ fun AdminLoginScreen(
                         Column {
                             Text("Admin Portal", style = MaterialTheme.typography.headlineMedium)
                             Text(
-                                "Server-verified admin_roles access only",
+                                "Owner & server-verified Admin Studio access",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = DskMuted
                             )

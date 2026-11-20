@@ -1,20 +1,23 @@
 package com.example.data.supabase
 
 import android.net.Uri
+import com.example.data.local.RuntimeApiKeyStore
 import com.example.data.model.SmartUrlMetadata
 import com.example.data.model.StreamSourceType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
 
 /**
- * Smart URL Import inspects only public/authorized metadata APIs and standard HTTP headers
- * (never bypasses DRM, paywalls, or authentication walls).
+ * Smart URL Import & API Key Diagnostic Engine.
+ * Inspects only public/authorized metadata APIs and configured admin API keys.
  */
 class SmartUrlImporter {
 
@@ -48,13 +51,18 @@ class SmartUrlImporter {
 
         val type = detectSourceType(trimmed)
         if (type == StreamSourceType.YOUTUBE) {
+            val ytKey = RuntimeApiKeyStore.youtubeApiKey
+            if (ytKey.isNotBlank()) {
+                val apiMeta = fetchYoutubeDataApi(trimmed, ytKey)
+                if (apiMeta != null) return@withContext apiMeta
+            }
             return@withContext fetchYoutubeOEmbed(trimmed)
         }
 
-        // Inspect public HTTP headers safely (HEAD, fallback Range GET for HLS/MP4 info)
         runCatching {
-            val headReq = Request.Builder().url(trimmed).head().build()
-            val headRes = client.newCall(headReq).execute()
+            val headBuilder = Request.Builder().url(trimmed).head()
+            applyCdnHeaderIfConfigured(headBuilder)
+            val headRes = client.newCall(headBuilder.build()).execute()
             val code = headRes.code
             val contentType = headRes.header("Content-Type").orEmpty().lowercase()
             headRes.close()
@@ -65,7 +73,7 @@ class SmartUrlImporter {
                     sourceType = type,
                     title = inferTitleFromUrl(trimmed),
                     isPlayable = false,
-                    statusNote = "Access restricted (HTTP $code). Only authorized public/signed URLs are supported."
+                    statusNote = "Access restricted (HTTP $code). Configure Media CDN API Key in Admin Panel if required."
                 )
             }
 
@@ -113,6 +121,219 @@ class SmartUrlImporter {
         }
     }
 
+    suspend fun searchTmdb(query: String, isSeries: Boolean): SmartUrlMetadata = withContext(Dispatchers.IO) {
+        val cleanQuery = query.trim()
+        if (cleanQuery.isBlank()) {
+            return@withContext SmartUrlMetadata(
+                sourceUrl = "",
+                sourceType = StreamSourceType.UNKNOWN,
+                statusNote = "Enter a title first to search TMDB."
+            )
+        }
+        val key = RuntimeApiKeyStore.tmdbApiKey.trim()
+        if (key.isBlank()) {
+            return@withContext SmartUrlMetadata(
+                sourceUrl = "",
+                sourceType = StreamSourceType.UNKNOWN,
+                statusNote = "TMDB API Key is not configured yet. Add it in Admin Studio -> API Keys."
+            )
+        }
+        runCatching {
+            val encoded = URLEncoder.encode(cleanQuery, "UTF-8")
+            val endpoint = if (isSeries) "tv" else "movie"
+            val isBearer = key.contains(".") && key.length > 40
+            val url = if (isBearer) {
+                "https://api.themoviedb.org/3/search/$endpoint?query=$encoded"
+            } else {
+                "https://api.themoviedb.org/3/search/$endpoint?api_key=${URLEncoder.encode(key, "UTF-8")}&query=$encoded"
+            }
+            val reqBuilder = Request.Builder().url(url).get()
+            if (isBearer) {
+                reqBuilder.header("Authorization", "Bearer $key")
+            }
+            client.newCall(reqBuilder.build()).execute().use { res ->
+                val raw = res.body?.string().orEmpty()
+                if (!res.isSuccessful) {
+                    return@withContext SmartUrlMetadata(
+                        sourceUrl = "",
+                        sourceType = StreamSourceType.UNKNOWN,
+                        statusNote = "TMDB API returned HTTP ${res.code}. Check your TMDB API Key."
+                    )
+                }
+                val json = JSONObject(raw)
+                val results = json.optJSONArray("results")
+                if (results == null || results.length() == 0) {
+                    return@withContext SmartUrlMetadata(
+                        sourceUrl = "",
+                        sourceType = StreamSourceType.UNKNOWN,
+                        statusNote = "No TMDB match found for '$cleanQuery'."
+                    )
+                }
+                val first = results.getJSONObject(0)
+                val title = first.optString(if (isSeries) "name" else "title", cleanQuery)
+                val overview = first.optString("overview", "")
+                val posterPath = first.optString("poster_path", "")
+                val backdropPath = first.optString("backdrop_path", "")
+                val langCode = first.optString("original_language", "en")
+                val resolvedLang = when (langCode.lowercase()) {
+                    "hi" -> "Hindi"
+                    "pa" -> "Punjabi"
+                    "ta" -> "Tamil"
+                    "te" -> "Telugu"
+                    else -> "English"
+                }
+                val thumbUrl = when {
+                    posterPath.isNotBlank() && posterPath != "null" -> "https://image.tmdb.org/t/p/w500$posterPath"
+                    backdropPath.isNotBlank() && backdropPath != "null" -> "https://image.tmdb.org/t/p/w780$backdropPath"
+                    else -> ""
+                }
+                SmartUrlMetadata(
+                    sourceUrl = "",
+                    sourceType = StreamSourceType.AUTHORIZED_STREAM,
+                    title = title,
+                    description = overview,
+                    thumbnailUrl = thumbUrl,
+                    language = resolvedLang,
+                    category = if (isSeries) "Web Series" else "Cinema",
+                    isPlayable = true,
+                    statusNote = "Retrieved TMDB metadata for '$title'."
+                )
+            }
+        }.getOrElse { err ->
+            SmartUrlMetadata(
+                sourceUrl = "",
+                sourceType = StreamSourceType.UNKNOWN,
+                statusNote = "TMDB lookup failed: ${err.message ?: "Network error"}"
+            )
+        }
+    }
+
+    suspend fun testSupabaseKey(url: String, anonKey: String): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanUrl = url.trim().trimEnd('/')
+            val cleanKey = anonKey.trim()
+            if (!cleanUrl.startsWith("https://")) throw IllegalStateException("Supabase URL must start with https://")
+            if (cleanKey.isBlank()) throw IllegalStateException("Enter Supabase Public Anon Key first.")
+            if (SupabaseConfig.isLikelyServiceRoleKey(cleanKey)) {
+                throw IllegalStateException("Never use a Service Role key in the app. Use Public Anon Key.")
+            }
+            val req = Request.Builder()
+                .url("$cleanUrl/rest/v1/movies?select=id&limit=1")
+                .header("apikey", cleanKey)
+                .header("Authorization", "Bearer $cleanKey")
+                .get()
+                .build()
+            client.newCall(req).execute().use { res ->
+                when (res.code) {
+                    in 200..299 -> "Connected to Supabase REST & Auth (HTTP ${res.code})."
+                    404 -> "Connected to Supabase! Run SQL Schema to create catalog tables (HTTP 404)."
+                    401, 403 -> throw IllegalStateException("Invalid Supabase Anon Key (HTTP ${res.code}).")
+                    else -> "Supabase responded with HTTP ${res.code}."
+                }
+            }
+        }
+    }
+
+    suspend fun testTmdbKey(apiKey: String): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanKey = apiKey.trim()
+            if (cleanKey.isBlank()) throw IllegalStateException("Enter TMDB API Key first.")
+            val isBearer = cleanKey.contains(".") && cleanKey.length > 40
+            val url = if (isBearer) {
+                "https://api.themoviedb.org/3/configuration"
+            } else {
+                "https://api.themoviedb.org/3/configuration?api_key=${URLEncoder.encode(cleanKey, "UTF-8")}"
+            }
+            val builder = Request.Builder().url(url).get()
+            if (isBearer) builder.header("Authorization", "Bearer $cleanKey")
+            client.newCall(builder.build()).execute().use { res ->
+                if (!res.isSuccessful) {
+                    throw IllegalStateException("TMDB rejected key (HTTP ${res.code}).")
+                }
+                "TMDB API Key verified (HTTP ${res.code})."
+            }
+        }
+    }
+
+    suspend fun testYoutubeKey(apiKey: String): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanKey = apiKey.trim()
+            if (cleanKey.isBlank()) throw IllegalStateException("Enter YouTube Data API v3 Key first.")
+            val url = "https://www.googleapis.com/youtube/v3/videos?part=id&id=dQw4w9WgXcQ&key=${URLEncoder.encode(cleanKey, "UTF-8")}"
+            val req = Request.Builder().url(url).get().build()
+            client.newCall(req).execute().use { res ->
+                if (!res.isSuccessful) {
+                    val body = res.body?.string().orEmpty()
+                    val msg = runCatching {
+                        JSONObject(body).optJSONObject("error")?.optString("message")
+                    }.getOrNull()
+                    throw IllegalStateException(msg?.takeIf { it.isNotBlank() } ?: "YouTube API rejected key (HTTP ${res.code}).")
+                }
+                "YouTube Data API v3 Key verified (HTTP ${res.code})."
+            }
+        }
+    }
+
+    suspend fun testFirebaseKey(apiKey: String): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanKey = apiKey.trim()
+            if (cleanKey.isBlank()) throw IllegalStateException("Enter Firebase Web API Key first.")
+            val url = "https://identitytoolkit.googleapis.com/v1/accounts:createAuthUri?key=${URLEncoder.encode(cleanKey, "UTF-8")}"
+            val body = """{"identifier":"check@example.com","continueUri":"https://localhost"}"""
+                .toRequestBody("application/json".toMediaType())
+            val req = Request.Builder().url(url).post(body).build()
+            client.newCall(req).execute().use { res ->
+                val raw = res.body?.string().orEmpty()
+                if (res.isSuccessful) {
+                    return@runCatching "Firebase Web API Key verified (HTTP ${res.code})."
+                }
+                val errMsg = runCatching {
+                    JSONObject(raw).optJSONObject("error")?.optString("message")
+                }.getOrNull().orEmpty()
+                if (errMsg.contains("CONFIGURATION_NOT_FOUND", ignoreCase = true)) {
+                    "Firebase API Key is recognized, enable Identity Toolkit / Firebase Auth in GCP Console."
+                } else {
+                    throw IllegalStateException(errMsg.ifBlank { "Firebase API Key check failed (HTTP ${res.code})." })
+                }
+            }
+        }
+    }
+
+    private fun fetchYoutubeDataApi(url: String, apiKey: String): SmartUrlMetadata? {
+        val videoId = extractYoutubeVideoId(url) ?: return null
+        return runCatching {
+            val apiUrl = "https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails&id=${URLEncoder.encode(videoId, "UTF-8")}&key=${URLEncoder.encode(apiKey, "UTF-8")}"
+            val req = Request.Builder().url(apiUrl).get().build()
+            client.newCall(req).execute().use { res ->
+                if (!res.isSuccessful) return null
+                val items = JSONObject(res.body?.string().orEmpty()).optJSONArray("items") ?: return null
+                if (items.length() == 0) return null
+                val item = items.getJSONObject(0)
+                val snippet = item.optJSONObject("snippet") ?: return null
+                val details = item.optJSONObject("contentDetails")
+                val thumbs = snippet.optJSONObject("thumbnails")
+                val bestThumb = thumbs?.optJSONObject("maxres")?.optString("url")
+                    ?: thumbs?.optJSONObject("high")?.optString("url")
+                    ?: thumbs?.optJSONObject("medium")?.optString("url")
+                    ?: ""
+                val durationIso = details?.optString("duration").orEmpty()
+                val durationMins = parseIsoDurationMinutes(durationIso)
+                SmartUrlMetadata(
+                    sourceUrl = url,
+                    sourceType = StreamSourceType.YOUTUBE,
+                    title = snippet.optString("title", "YouTube Video"),
+                    description = snippet.optString("description", "").take(500),
+                    thumbnailUrl = bestThumb,
+                    language = "English",
+                    durationMinutes = durationMins,
+                    category = "YouTube Data API v3",
+                    isPlayable = true,
+                    statusNote = "Retrieved YouTube Data API v3 metadata (${if (durationMins > 0) "${durationMins}m" else "verified"})."
+                )
+            }
+        }.getOrNull()
+    }
+
     private fun fetchYoutubeOEmbed(url: String): SmartUrlMetadata {
         return runCatching {
             val encoded = URLEncoder.encode(url, "UTF-8")
@@ -155,8 +376,9 @@ class SmartUrlImporter {
 
     private fun estimateHlsDurationMinutes(url: String): Int {
         return runCatching {
-            val req = Request.Builder().url(url).get().build()
-            client.newCall(req).execute().use { res ->
+            val reqBuilder = Request.Builder().url(url).get()
+            applyCdnHeaderIfConfigured(reqBuilder)
+            client.newCall(reqBuilder.build()).execute().use { res ->
                 if (!res.isSuccessful) return 0
                 val text = res.body?.string().orEmpty()
                 val totalSeconds = Regex("""#EXTINF:([0-9]+(?:\.[0-9]+)?)""")
@@ -165,6 +387,14 @@ class SmartUrlImporter {
                 if (totalSeconds > 0) (totalSeconds / 60.0).roundToInt().coerceAtLeast(1) else 0
             }
         }.getOrDefault(0)
+    }
+
+    private fun applyCdnHeaderIfConfigured(builder: Request.Builder) {
+        val cdnKey = RuntimeApiKeyStore.mediaCdnApiKey
+        val cdnHeader = RuntimeApiKeyStore.mediaCdnHeaderName
+        if (cdnKey.isNotBlank() && cdnHeader.isNotBlank()) {
+            builder.header(cdnHeader, cdnKey)
+        }
     }
 
     private fun inferTitleFromUrl(url: String): String {
@@ -182,6 +412,15 @@ class SmartUrlImporter {
     }
 
     companion object {
+        fun parseIsoDurationMinutes(iso: String): Int {
+            if (iso.isBlank()) return 0
+            val hours = Regex("""(\d+)H""").find(iso)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+            val mins = Regex("""(\d+)M""").find(iso)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+            val secs = Regex("""(\d+)S""").find(iso)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+            val totalSecs = hours * 3600 + mins * 60 + secs
+            return if (totalSecs > 0) (totalSecs / 60.0).roundToInt().coerceAtLeast(1) else 0
+        }
+
         fun extractYoutubeVideoId(url: String): String? {
             val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
             val host = uri.host?.lowercase().orEmpty()

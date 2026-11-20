@@ -25,10 +25,14 @@ import com.example.data.repository.CatalogSnapshot
 import com.example.data.supabase.SupabaseSqlSchema
 import com.example.ui.components.GlassCard
 import com.example.ui.theme.*
+import com.example.ui.viewmodel.AdminPasswordUiState
 import com.example.ui.viewmodel.AdminState
+import com.example.ui.viewmodel.ApiKeysUiState
 
 private enum class AdminSectionTab(val label: String) {
     OVERVIEW("Dashboard"),
+    API_KEYS("API Keys"),
+    ADMIN_SECURITY("Admin Password"),
     MOVIES("Movies"),
     SERIES("Web Series"),
     LIVE_TV("Live TV"),
@@ -39,13 +43,22 @@ private enum class AdminSectionTab(val label: String) {
 @Composable
 fun AdminDashboardScreen(
     isAdminAuthorized: Boolean,
+    adminEmail: String = "",
+    isBackendConfigured: Boolean = true,
     adminState: AdminState,
+    apiKeysState: ApiKeysUiState = ApiKeysUiState(),
+    adminPasswordState: AdminPasswordUiState = AdminPasswordUiState(),
     catalog: CatalogSnapshot,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
     onOpenApkBuilder: () -> Unit,
     onInspectSmartUrl: (String) -> Unit,
+    onSearchTmdb: (String, Boolean) -> Unit = { _, _ -> },
     onClearSmartUrl: () -> Unit,
+    onSaveAllApiKeys: (ApiKeysConfig) -> Unit = {},
+    onTestApiKey: (String, ApiKeysConfig) -> Unit = { _, _ -> },
+    onChangeAdminPassword: (String, String, String) -> Unit = { _, _, _ -> },
+    onClearAdminPasswordFeedback: () -> Unit = {},
     onSaveMovie: (MovieItem, () -> Unit) -> Unit,
     onToggleMoviePublish: (MovieItem) -> Unit,
     onDeleteMovie: (MovieItem) -> Unit,
@@ -114,6 +127,12 @@ fun AdminDashboardScreen(
             }
             Row {
                 IconButton(
+                    onClick = { activeTab = AdminSectionTab.API_KEYS },
+                    modifier = Modifier.testTag("admin_api_keys_button")
+                ) {
+                    Icon(Icons.Filled.VpnKey, contentDescription = "API Keys Setup", tint = DskWarning)
+                }
+                IconButton(
                     onClick = { showAuthorizeAdminsDialog = true },
                     modifier = Modifier.testTag("admin_manage_admins_button")
                 ) {
@@ -153,7 +172,24 @@ fun AdminDashboardScreen(
         }
 
         when (activeTab) {
-            AdminSectionTab.OVERVIEW -> AdminOverviewContent(adminState, catalog)
+            AdminSectionTab.OVERVIEW -> AdminOverviewContent(
+                adminState = adminState,
+                catalog = catalog,
+                isBackendConfigured = isBackendConfigured,
+                onOpenApiKeys = { activeTab = AdminSectionTab.API_KEYS },
+                onOpenPasswordSettings = { activeTab = AdminSectionTab.ADMIN_SECURITY }
+            )
+            AdminSectionTab.API_KEYS -> AdminApiKeysHubContent(
+                apiKeysState = apiKeysState,
+                onSaveAll = onSaveAllApiKeys,
+                onTestService = onTestApiKey
+            )
+            AdminSectionTab.ADMIN_SECURITY -> AdminSecuritySettingsContent(
+                adminEmail = adminEmail,
+                passwordState = adminPasswordState,
+                onChangeAdminPassword = onChangeAdminPassword,
+                onClearFeedback = onClearAdminPasswordFeedback
+            )
             AdminSectionTab.MOVIES -> AdminMoviesList(
                 movies = catalog.movies,
                 onAdd = {
@@ -235,6 +271,7 @@ fun AdminDashboardScreen(
             smartMeta = adminState.smartUrlMetadata,
             isInspecting = adminState.isInspectingUrl,
             onInspectUrl = onInspectSmartUrl,
+            onSearchTmdb = { query -> onSearchTmdb(query, false) },
             onDismiss = { showMovieEditor = false },
             onSave = { movie -> onSaveMovie(movie) { showMovieEditor = false } }
         )
@@ -243,6 +280,9 @@ fun AdminDashboardScreen(
     if (showSeriesEditor && editingSeries != null) {
         SeriesEditorDialog(
             initial = editingSeries!!,
+            smartMeta = adminState.smartUrlMetadata,
+            isInspecting = adminState.isInspectingUrl,
+            onSearchTmdb = { query -> onSearchTmdb(query, true) },
             onDismiss = { showSeriesEditor = false },
             onSave = { series -> onSaveSeries(series) { showSeriesEditor = false } }
         )
@@ -420,7 +460,10 @@ fun AdminDashboardScreen(
 @Composable
 private fun AdminOverviewContent(
     adminState: AdminState,
-    catalog: CatalogSnapshot
+    catalog: CatalogSnapshot,
+    isBackendConfigured: Boolean,
+    onOpenApiKeys: () -> Unit,
+    onOpenPasswordSettings: () -> Unit
 ) {
     val stats = adminState.stats
     val totalCatalog = (stats.totalMovies + stats.totalWebSeries + stats.totalLiveChannels + stats.totalSports + stats.totalKids).coerceAtLeast(1)
@@ -430,6 +473,43 @@ private fun AdminOverviewContent(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        item {
+            GlassCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = if (isBackendConfigured) "API Keys & Admin Security" else "Setup Required: Connect Your API Keys",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = if (isBackendConfigured) DskNeonViolet else DskWarning,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = if (isBackendConfigured) {
+                            "Manage Supabase, YouTube, TMDB, Firebase, GitHub APK Builder, and Media CDN keys or change your Admin password."
+                        } else {
+                            "Supabase Anon Key is not set yet. Open API Keys to add Supabase, YouTube, TMDB, Firebase, and GitHub keys right here."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = DskSilver
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = onOpenApiKeys,
+                            colors = ButtonDefaults.buttonColors(containerColor = DskCrimson),
+                            modifier = Modifier.weight(1f).height(48.dp)
+                        ) {
+                            Text("API Keys Setup")
+                        }
+                        OutlinedButton(
+                            onClick = onOpenPasswordSettings,
+                            border = DskGradients.GlassBorderStroke,
+                            modifier = Modifier.weight(1f).height(48.dp)
+                        ) {
+                            Text("Admin Password", color = DskWhite)
+                        }
+                    }
+                }
+            }
+        }
         item {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 AdminKpiCard("Total Users", "${stats.totalUsers}", Modifier.weight(1f))

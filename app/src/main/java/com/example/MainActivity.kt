@@ -61,6 +61,8 @@ fun DskVideoApp(vm: MainViewModel) {
     val authBusy by vm.authBusy.collectAsStateWithLifecycle()
     val authError by vm.authError.collectAsStateWithLifecycle()
     val isBackendConfigured by vm.isBackendConfigured.collectAsStateWithLifecycle()
+    val apiKeysState by vm.apiKeysState.collectAsStateWithLifecycle()
+    val adminPasswordState by vm.adminPasswordState.collectAsStateWithLifecycle()
     val apkBuilderState by vm.apkBuilderState.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -387,10 +389,6 @@ fun DskVideoApp(vm: MainViewModel) {
                                     vm.loadAdminOverview()
                                     navController.navigate(DskRoute.AdminDashboard)
                                 },
-                                onOpenAdminLogin = {
-                                    vm.clearAuthError()
-                                    navController.navigate(DskRoute.AdminLogin)
-                                },
                                 onLogout = {
                                     vm.logout {
                                         navController.navigate(DskRoute.Auth) {
@@ -482,16 +480,26 @@ fun DskVideoApp(vm: MainViewModel) {
                         composable<DskRoute.AdminDashboard> {
                             AdminDashboardScreen(
                                 isAdminAuthorized = vm.isAdmin(),
+                                adminEmail = vm.currentEmail(),
+                                isBackendConfigured = isBackendConfigured,
                                 adminState = adminState,
+                                apiKeysState = apiKeysState,
+                                adminPasswordState = adminPasswordState,
                                 catalog = vm.currentCatalog(),
                                 onBack = { navController.popBackStack() },
                                 onRefresh = {
                                     vm.refreshCatalog()
                                     vm.loadAdminOverview()
+                                    vm.loadAllApiKeys()
                                 },
                                 onOpenApkBuilder = { navController.navigate(DskRoute.ApkBuilder) },
                                 onInspectSmartUrl = vm::inspectSmartUrl,
+                                onSearchTmdb = vm::searchTmdbMetadata,
                                 onClearSmartUrl = vm::clearSmartUrlMetadata,
+                                onSaveAllApiKeys = vm::saveAllApiKeys,
+                                onTestApiKey = vm::testApiKey,
+                                onChangeAdminPassword = vm::changeAdminPassword,
+                                onClearAdminPasswordFeedback = vm::clearAdminPasswordFeedback,
                                 onSaveMovie = vm::saveMovie,
                                 onToggleMoviePublish = vm::toggleMoviePublish,
                                 onDeleteMovie = vm::deleteMovie,

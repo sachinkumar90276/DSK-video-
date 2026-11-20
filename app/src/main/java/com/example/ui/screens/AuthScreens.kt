@@ -1,7 +1,9 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -51,7 +53,9 @@ fun AuthScreen(
     var username by remember { mutableStateOf("") }
     var rememberSession by remember { mutableStateOf(true) }
     var passwordVisible by remember { mutableStateOf(false) }
+    var brandTapCount by remember { mutableIntStateOf(0) }
 
+    @OptIn(ExperimentalFoundationApi::class)
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -78,7 +82,24 @@ fun AuthScreen(
             verticalArrangement = Arrangement.spacedBy(18.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            DskBrandMark(compact = false)
+            DskBrandMark(
+                compact = false,
+                modifier = Modifier
+                    .combinedClickable(
+                        onClick = {
+                            brandTapCount++
+                            if (brandTapCount >= 5) {
+                                brandTapCount = 0
+                                onOpenAdminLogin()
+                            }
+                        },
+                        onLongClick = {
+                            brandTapCount = 0
+                            onOpenAdminLogin()
+                        }
+                    )
+                    .testTag("brand_logo_admin_trigger")
+            )
             Text(
                 text = "Entertainment Without Limits",
                 style = MaterialTheme.typography.bodyLarge,
@@ -278,19 +299,6 @@ fun AuthScreen(
                         }
                     }
                 }
-            }
-
-            OutlinedButton(
-                onClick = onOpenAdminLogin,
-                border = DskGradients.GlassBorderStroke,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .testTag("open_admin_login_button")
-            ) {
-                Icon(Icons.Filled.AdminPanelSettings, contentDescription = null, tint = DskNeonViolet)
-                Spacer(Modifier.width(8.dp))
-                Text("Separate Admin Portal Login", color = DskWhite)
             }
 
             Text(

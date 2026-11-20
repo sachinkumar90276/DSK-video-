@@ -38,8 +38,11 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
+import com.example.data.local.RuntimeApiKeyStore
 import com.example.data.model.AppSettingsState
 import com.example.data.model.PlayableMedia
 import com.example.data.supabase.SmartUrlImporter
@@ -125,7 +128,15 @@ fun PlayerScreen(
     }
 
     val exoPlayer = remember(media.videoUrl) {
-        ExoPlayer.Builder(context).build().apply {
+        val builder = ExoPlayer.Builder(context)
+        val cdnKey = RuntimeApiKeyStore.mediaCdnApiKey
+        val cdnHeader = RuntimeApiKeyStore.mediaCdnHeaderName
+        if (cdnKey.isNotBlank() && cdnHeader.isNotBlank()) {
+            val httpFactory = DefaultHttpDataSource.Factory()
+                .setDefaultRequestProperties(mapOf(cdnHeader to cdnKey))
+            builder.setMediaSourceFactory(DefaultMediaSourceFactory(httpFactory))
+        }
+        builder.build().apply {
             val itemBuilder = MediaItem.Builder()
                 .setUri(media.videoUrl.toUri())
             if (media.videoUrl.lowercase().contains(".m3u8")) {

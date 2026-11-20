@@ -354,3 +354,20 @@ data class AdminDashboardStats(
 ) {
     val totalVideos: Int get() = totalMovies + totalEpisodes + totalSports + totalKids
 }
+
+data class ApiKeysConfig(
+    val supabaseUrl: String = "",
+    val supabaseAnonKey: String = "",
+    val githubOwner: String = "",
+    val githubRepo: String = "",
+    val githubBranch: String = "main",
+    val githubToken: String = "",
+    val tmdbApiKey: String = "",
+    val youtubeApiKey: String = "",
+    val firebaseProjectId: String = "",
+    val firebaseApiKey: String = "",
+    val firebaseAppId: String = "",
+    val mediaCdnApiKey: String = "",
+    val mediaCdnHeaderName: String = "X-API-Key"
+)
+

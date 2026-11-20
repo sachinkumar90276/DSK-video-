@@ -46,6 +46,12 @@ CREATE TABLE IF NOT EXISTS public.admin_authorized_emails (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+INSERT INTO public.admin_authorized_emails (email, role)
+VALUES
+    ('sachin.vc.rajput@gmail.com', 'super_admin'),
+    ('s7165349@gmail.com', 'super_admin')
+ON CONFLICT (email) DO NOTHING;
+
 -- Helper security-definer function for RLS (checks both admin_roles and legacy user_roles)
 CREATE OR REPLACE FUNCTION public.is_admin()
 RETURNS BOOLEAN

@@ -52,7 +52,6 @@ fun ProfileScreen(
     onOpenWatchHistory: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenAdminPanel: () -> Unit,
-    onOpenAdminLogin: () -> Unit,
     onLogout: () -> Unit
 ) {
     val snapshot = (catalogState as? CatalogState.Ready)?.snapshot
@@ -243,15 +242,17 @@ fun ProfileScreen(
             }
         }
 
-        item {
-            GlassCard(modifier = Modifier.fillMaxWidth()) {
-                ProfileActionRow(
-                    icon = Icons.Filled.AdminPanelSettings,
-                    title = if (isAdmin) "Open Admin Panel" else "Admin Portal Login",
-                    subtitle = if (isAdmin) "Manage movies, series, live TV, sports & kids" else "Separate administrator sign-in",
-                    onClick = if (isAdmin) onOpenAdminPanel else onOpenAdminLogin,
-                    testTag = "profile_admin_row"
-                )
+        if (isAdmin) {
+            item {
+                GlassCard(modifier = Modifier.fillMaxWidth()) {
+                    ProfileActionRow(
+                        icon = Icons.Filled.AdminPanelSettings,
+                        title = "Open Admin Panel",
+                        subtitle = "Manage movies, series, live TV, sports & kids",
+                        onClick = onOpenAdminPanel,
+                        testTag = "profile_admin_row"
+                    )
+                }
             }
         }
 

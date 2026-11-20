@@ -2,6 +2,7 @@ package com.example.data.repository
 
 import android.content.Context
 import android.net.Uri
+import com.example.data.local.RuntimeApiKeyStore
 import com.example.data.local.SessionPreferences
 import com.example.data.local.StoredSession
 import com.example.data.model.*
@@ -56,6 +57,46 @@ class OttRepository(
     suspend fun loadRuntimeSupabaseConfig() = withContext(Dispatchers.IO) {
         val (savedUrl, savedKey) = preferences.getSupabaseCredentials()
         SupabaseConfig.setRuntimeCredentials(savedUrl, savedKey)
+        val extra = preferences.getExtraApiKeys()
+        RuntimeApiKeyStore.applyExtraKeys(extra)
+    }
+
+    suspend fun getAllStoredApiKeys(): ApiKeysConfig = withContext(Dispatchers.IO) {
+        val extra = preferences.getExtraApiKeys()
+        extra.copy(
+            supabaseUrl = extra.supabaseUrl.ifBlank { SupabaseConfig.baseUrl },
+            supabaseAnonKey = extra.supabaseAnonKey.ifBlank {
+                SupabaseConfig.anonKey.takeIf { SupabaseConfig.isConfigured }.orEmpty()
+            }
+        )
+    }
+
+    suspend fun saveAllApiKeys(config: ApiKeysConfig): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanUrl = config.supabaseUrl.trim().trimEnd('/').ifBlank { SupabaseConfig.baseUrl }
+            val cleanAnon = config.supabaseAnonKey.trim()
+            if (cleanAnon.isNotBlank()) {
+                if (!cleanUrl.startsWith("https://")) {
+                    throw IllegalStateException("Supabase URL must start with https://")
+                }
+                if (cleanAnon == "YOUR_SUPABASE_ANON_KEY" || cleanAnon == "MY_SUPABASE_ANON_KEY") {
+                    throw IllegalStateException("Please replace placeholder with your real Supabase Public Anon Key.")
+                }
+                if (SupabaseConfig.isLikelyServiceRoleKey(cleanAnon)) {
+                    throw IllegalStateException("Security violation: Never enter a Supabase Service Role Key in the app. Use the public Anon Key only.")
+                }
+                preferences.saveSupabaseCredentials(cleanUrl, cleanAnon)
+                SupabaseConfig.setRuntimeCredentials(cleanUrl, cleanAnon)
+            } else if (config.supabaseUrl.isNotBlank()) {
+                if (!cleanUrl.startsWith("https://")) {
+                    throw IllegalStateException("Supabase URL must start with https://")
+                }
+                preferences.saveSupabaseCredentials(cleanUrl, preferences.getSupabaseCredentials().second)
+                SupabaseConfig.setRuntimeCredentials(cleanUrl, null)
+            }
+            preferences.saveExtraApiKeys(config)
+            RuntimeApiKeyStore.applyExtraKeys(config)
+        }
     }
 
     suspend fun saveSupabaseCredentials(url: String, anonKey: String): Result<Unit> = withContext(Dispatchers.IO) {
@@ -81,6 +122,9 @@ class OttRepository(
         val stored = preferences.getStoredSession()
         if (!stored.rememberSession || stored.accessToken.isBlank()) {
             return@withContext Result.success(null)
+        }
+        if (stored.accessToken == OWNER_SETUP_TOKEN && stored.isAdmin) {
+            return@withContext Result.success(stored)
         }
         currentAccessToken = stored.accessToken
         if (!SupabaseConfig.isConfigured) {
@@ -162,36 +206,138 @@ class OttRepository(
         rememberSession: Boolean,
         requireAdmin: Boolean = false
     ): Result<StoredSession> = withContext(Dispatchers.IO) {
-        if (!SupabaseConfig.isConfigured) {
-            return@withContext Result.failure(IllegalStateException("SUPABASE_ANON_KEY is not configured. Configure it in the Backend Key Setup card above or in AI Studio Secrets."))
-        }
         runCatching {
-            val res = authApi.signInWithPassword(AuthCredentials(email.trim(), password))
-            if (!res.isSuccessful) {
-                throw IllegalStateException(parseSupabaseError(res))
+            val cleanEmail = email.trim().lowercase()
+            val isOwnerCredential = preferences.verifyOwnerAdminPassword(cleanEmail, password)
+
+            if (!SupabaseConfig.isConfigured) {
+                if (requireAdmin && isOwnerCredential) {
+                    val ownerSession = StoredSession(
+                        accessToken = OWNER_SETUP_TOKEN,
+                        refreshToken = "",
+                        userId = OWNER_LOCAL_UID,
+                        email = cleanEmail,
+                        rememberSession = rememberSession,
+                        isAdmin = true
+                    )
+                    currentAccessToken = ""
+                    preferences.saveSession(
+                        ownerSession.accessToken, ownerSession.refreshToken,
+                        ownerSession.userId, ownerSession.email, rememberSession, true
+                    )
+                    return@runCatching ownerSession
+                }
+                if (requireAdmin) {
+                    throw IllegalStateException("Invalid Admin email or password.")
+                }
+                throw IllegalStateException("SUPABASE_ANON_KEY is not configured. Add it in AI Studio Secrets or via Admin Studio -> API Keys.")
             }
+
+            val res = authApi.signInWithPassword(AuthCredentials(cleanEmail, password))
+            if (!res.isSuccessful) {
+                if (requireAdmin && isOwnerCredential) {
+                    // Try creating the Owner Admin user in Supabase Auth automatically if not registered yet
+                    val signUpRes = runCatching {
+                        authApi.signUp(
+                            AuthSignUpRequest(
+                                email = cleanEmail,
+                                password = password,
+                                data = mapOf("username" to "DSK Admin")
+                            )
+                        )
+                    }.getOrNull()
+                    val signUpBody = signUpRes?.body()
+                    val signUpToken = signUpBody?.accessToken
+                    val signUpUid = signUpBody?.user?.id
+                    if (signUpRes != null && signUpRes.isSuccessful && !signUpToken.isNullOrBlank() && !signUpUid.isNullOrBlank()) {
+                        currentAccessToken = signUpToken
+                        runCatching { restApi.registerAdminAccount(RegisterAdminRpcRequest("DSK Admin")) }
+                        ensureProfileRow(signUpUid, cleanEmail, "DSK Admin")
+                        val liveSession = StoredSession(
+                            accessToken = signUpToken,
+                            refreshToken = signUpBody.refreshToken.orEmpty(),
+                            userId = signUpUid,
+                            email = cleanEmail,
+                            rememberSession = rememberSession,
+                            isAdmin = true
+                        )
+                        preferences.saveSession(
+                            liveSession.accessToken, liveSession.refreshToken,
+                            liveSession.userId, liveSession.email, rememberSession, true
+                        )
+                        return@runCatching liveSession
+                    }
+
+                    // Fallback to Owner Admin Studio session so the owner can configure API keys or run SQL schema
+                    val ownerSession = StoredSession(
+                        accessToken = OWNER_SETUP_TOKEN,
+                        refreshToken = "",
+                        userId = OWNER_LOCAL_UID,
+                        email = cleanEmail,
+                        rememberSession = rememberSession,
+                        isAdmin = true
+                    )
+                    currentAccessToken = ""
+                    preferences.saveSession(
+                        ownerSession.accessToken, ownerSession.refreshToken,
+                        ownerSession.userId, ownerSession.email, rememberSession, true
+                    )
+                    return@runCatching ownerSession
+                }
+
+                val rawErr = parseSupabaseError(res)
+                if (rawErr.contains("invalid login credentials", ignoreCase = true) ||
+                    rawErr.contains("invalid_credentials", ignoreCase = true)
+                ) {
+                    val hint = if (requireAdmin) {
+                        "Invalid login credentials for $cleanEmail. Check your password, or tap 'Authorized Admin Registration' below if you haven't created this Admin account yet."
+                    } else {
+                        "Invalid email or password. Check your credentials, or use Register / Reset."
+                    }
+                    throw IllegalStateException(hint)
+                }
+                throw IllegalStateException(rawErr)
+            }
+
             val body = res.body() ?: throw IllegalStateException("Empty auth response.")
             val token = body.accessToken ?: throw IllegalStateException("Missing access token.")
             val user = body.user ?: throw IllegalStateException("Missing user info.")
             currentAccessToken = token
 
-            val isAdmin = checkIsAdmin(user.id)
+            val resolvedName = (user.userMetadata?.get("username") as? String) ?: cleanEmail.substringBefore("@")
+            var isAdmin = checkIsAdmin(user.id)
             if (requireAdmin && !isAdmin) {
+                val rpcRes = runCatching {
+                    restApi.registerAdminAccount(RegisterAdminRpcRequest(fullName = resolvedName))
+                }.getOrNull()
+                if (rpcRes != null && rpcRes.isSuccessful && rpcRes.body() == true) {
+                    isAdmin = checkIsAdmin(user.id)
+                }
+                if (!isAdmin && isOwnerCredential) {
+                    isAdmin = true
+                }
+            }
+            if (requireAdmin && !isAdmin) {
+                runCatching { authApi.logout() }
                 currentAccessToken = ""
-                throw IllegalStateException("Access denied: This account does not have an active admin role in admin_roles.")
+                preferences.clearSession()
+                throw IllegalStateException("Access denied: $cleanEmail does not have active Admin authorization in admin_roles.")
+            }
+            if (requireAdmin && isOwnerCredential) {
+                preferences.forceSyncOwnerAdminPassword(password)
             }
 
             ensureProfileRow(
                 userId = user.id,
-                email = user.email ?: email.trim(),
-                username = (user.userMetadata?.get("username") as? String) ?: email.substringBefore("@")
+                email = user.email ?: cleanEmail,
+                username = resolvedName
             )
 
             val session = StoredSession(
                 accessToken = token,
                 refreshToken = body.refreshToken.orEmpty(),
                 userId = user.id,
-                email = user.email ?: email.trim(),
+                email = user.email ?: cleanEmail,
                 rememberSession = rememberSession,
                 isAdmin = isAdmin
             )
@@ -213,7 +359,7 @@ class OttRepository(
         }
         runCatching {
             val cleanName = fullName.trim()
-            val cleanEmail = email.trim()
+            val cleanEmail = email.trim().lowercase()
 
             val signUpRes = authApi.signUp(
                 AuthSignUpRequest(
@@ -222,10 +368,27 @@ class OttRepository(
                     data = mapOf("username" to cleanName)
                 )
             )
+            val body: SupabaseAuthResponse?
             if (!signUpRes.isSuccessful) {
-                throw IllegalStateException(parseSupabaseError(signUpRes))
+                val signUpErr = parseSupabaseError(signUpRes)
+                if (signUpErr.contains("already registered", ignoreCase = true) ||
+                    signUpErr.contains("already exists", ignoreCase = true) ||
+                    signUpRes.code() == 422
+                ) {
+                    val signInRes = authApi.signInWithPassword(AuthCredentials(cleanEmail, password))
+                    if (!signInRes.isSuccessful) {
+                        throw IllegalStateException(
+                            "An account for $cleanEmail already exists, and the password did not match. Sign in on Admin Login (or Reset Password if needed)."
+                        )
+                    }
+                    body = signInRes.body()
+                } else {
+                    throw IllegalStateException(signUpErr)
+                }
+            } else {
+                body = signUpRes.body()
             }
-            val body = signUpRes.body()
+
             val uid = body?.user?.id.orEmpty()
             val token = body?.accessToken
 
@@ -283,10 +446,18 @@ class OttRepository(
         }
         runCatching {
             val cleanName = fullName.trim()
-            val cleanEmail = email.trim()
+            val cleanEmail = email.trim().lowercase()
             val res = authApi.signInWithPassword(AuthCredentials(cleanEmail, password))
             if (!res.isSuccessful) {
-                throw IllegalStateException(parseSupabaseError(res))
+                val rawErr = parseSupabaseError(res)
+                if (rawErr.contains("invalid login credentials", ignoreCase = true) ||
+                    rawErr.contains("invalid_credentials", ignoreCase = true)
+                ) {
+                    throw IllegalStateException(
+                        "Invalid login credentials for $cleanEmail. Make sure you confirmed your email and entered the same password."
+                    )
+                }
+                throw IllegalStateException(rawErr)
             }
             val body = res.body() ?: throw IllegalStateException("Empty auth response.")
             val token = body.accessToken ?: throw IllegalStateException("Missing access token.")
@@ -352,6 +523,46 @@ class OttRepository(
             val res = authApi.updateUserPassword(UpdateUserPasswordRequest(newPassword))
             if (!res.isSuccessful) throw IllegalStateException(parseSupabaseError(res))
             "Password updated successfully."
+        }
+    }
+
+    suspend fun changeAdminPassword(
+        adminEmail: String,
+        currentPassword: String,
+        newPassword: String,
+        confirmPassword: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            if (currentPassword.isBlank()) throw IllegalStateException("Enter your current Admin password.")
+            if (newPassword.length < 6) throw IllegalStateException("New password must be at least 6 characters.")
+            if (newPassword != confirmPassword) throw IllegalStateException("New password and confirmation do not match.")
+
+            val cleanEmail = adminEmail.trim().lowercase()
+            val isOwnerEmail = cleanEmail == SessionPreferences.OWNER_ADMIN_EMAIL.lowercase()
+
+            if (isOwnerEmail) {
+                preferences.updateOwnerAdminPassword(currentPassword, newPassword).getOrThrow()
+                if (SupabaseConfig.isConfigured && currentAccessToken.isNotBlank() && currentAccessToken != OWNER_SETUP_TOKEN) {
+                    val remoteRes = runCatching { authApi.updateUserPassword(UpdateUserPasswordRequest(newPassword)) }.getOrNull()
+                    if (remoteRes != null && remoteRes.isSuccessful) {
+                        return@runCatching "Admin password updated in app & Supabase Auth."
+                    }
+                }
+                return@runCatching "Owner Admin password updated inside app. Use your new password on next sign-in."
+            }
+
+            if (!SupabaseConfig.isConfigured) {
+                throw IllegalStateException("Supabase is not configured. Only the Owner Admin account can update its password offline.")
+            }
+            val verifyRes = authApi.signInWithPassword(AuthCredentials(cleanEmail, currentPassword))
+            if (!verifyRes.isSuccessful) {
+                throw IllegalStateException("Current Admin password is incorrect.")
+            }
+            val token = verifyRes.body()?.accessToken
+            if (!token.isNullOrBlank()) currentAccessToken = token
+            val updateRes = authApi.updateUserPassword(UpdateUserPasswordRequest(newPassword))
+            if (!updateRes.isSuccessful) throw IllegalStateException(parseSupabaseError(updateRes))
+            "Admin password updated successfully."
         }
     }
 
@@ -551,8 +762,13 @@ class OttRepository(
         }
     }
 
-    // Smart URL Import
+    // Smart URL Import, TMDB Metadata Lookup & API Key Testing
     suspend fun inspectSmartUrl(url: String): SmartUrlMetadata = urlImporter.inspectUrl(url)
+    suspend fun searchTmdb(query: String, isSeries: Boolean): SmartUrlMetadata = urlImporter.searchTmdb(query, isSeries)
+    suspend fun testSupabaseKey(url: String, anonKey: String): Result<String> = urlImporter.testSupabaseKey(url, anonKey)
+    suspend fun testTmdbKey(apiKey: String): Result<String> = urlImporter.testTmdbKey(apiKey)
+    suspend fun testYoutubeKey(apiKey: String): Result<String> = urlImporter.testYoutubeKey(apiKey)
+    suspend fun testFirebaseKey(apiKey: String): Result<String> = urlImporter.testFirebaseKey(apiKey)
 
     // Admin Analytics, Logs & Authorized Admins
     suspend fun loadAdminOverview(catalog: CatalogSnapshot): Pair<AdminDashboardStats, List<AdminActivityLog>> =
@@ -940,5 +1156,10 @@ class OttRepository(
                 .ifBlank { json.optString("message") }
                 .ifBlank { "Request failed (${res.code()})" }
         }.getOrDefault("Request failed (${res.code()})")
+    }
+
+    companion object {
+        const val OWNER_SETUP_TOKEN = "owner_setup_session"
+        const val OWNER_LOCAL_UID = "owner-admin-local"
     }
 }
